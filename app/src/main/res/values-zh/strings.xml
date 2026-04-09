@@ -1,0 +1,59 @@
+<resources>
+    <string name="app_name">USB/IP 服务器</string>
+
+    <!-- App Title -->
+    <string name="app_title">USB/IP 服务器</string>
+
+    <!-- Server Control -->
+    <string name="server_control">服务器控制</string>
+    <string name="port">端口</string>
+    <string name="start_server">启动服务器</string>
+    <string name="stop_server">停止服务器</string>
+    <string name="starting">启动中…</string>
+    <string name="stopping">停止中…</string>
+
+    <!-- Status -->
+    <string name="server_running">服务器运行中</string>
+    <string name="server_stopped">服务器已停止</string>
+    <string name="address">地址: %1$s:%2$d</string>
+    <string name="devices_bound">已绑定 %1$d 个设备</string>
+
+    <!-- Device List -->
+    <string name="usb_devices">USB 设备</string>
+    <string name="refresh">刷新</string>
+    <string name="no_devices">未找到 USB 设备</string>
+    <string name="bind">绑定</string>
+    <string name="unbind">解绑</string>
+    <string name="unknown_device">未知设备</string>
+
+    <!-- Log -->
+    <string name="log">日志</string>
+    <string name="expand">展开</string>
+    <string name="clear">清空</string>
+    <string name="log_messages">日志消息</string>
+    <string name="close">关闭</string>
+    <string name="no_logs">暂无日志</string>
+
+    <!-- Toast Messages -->
+    <string name="please_start_server">请先启动服务器</string>
+    <string name="permission_denied">权限被拒绝</string>
+    <string name="bind_success">绑定成功: %1$s</string>
+    <string name="bind_failed">绑定失败: %1$s</string>
+    <string name="unbind_success">已解绑: %1$s</string>
+    <string name="unbind_failed">解绑失败: %1$s</string>
+    <string name="device_detached">设备已拔出: %1$s</string>
+
+    <!-- Error Messages -->
+    <string name="error_device_not_found">设备未找到</string>
+    <string name="error_device_in_use">设备正在使用中</string>
+    <string name="error_device_open_failed">无法打开设备</string>
+    <string name="error_get_descriptor_failed">获取设备描述符失败</string>
+    <string name="error_get_config_failed">获取配置描述符失败</string>
+    <string name="error_claim_interface_failed">声明接口失败</string>
+    <string name="error_unknown">未知错误</string>
+
+    <!-- Language -->
+    <string name="language">语言</string>
+    <string name="language_en">English</string>
+    <string name="language_zh">中文</string>
+</resources>

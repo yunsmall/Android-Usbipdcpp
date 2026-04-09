@@ -1,0 +1,59 @@
+<resources>
+    <string name="app_name">USB/IP Server</string>
+
+    <!-- App Title -->
+    <string name="app_title">USB/IP Server</string>
+
+    <!-- Server Control -->
+    <string name="server_control">Server Control</string>
+    <string name="port">Port</string>
+    <string name="start_server">Start Server</string>
+    <string name="stop_server">Stop Server</string>
+    <string name="starting">Starting…</string>
+    <string name="stopping">Stopping…</string>
+
+    <!-- Status -->
+    <string name="server_running">Server Running</string>
+    <string name="server_stopped">Server Stopped</string>
+    <string name="address">Address: %1$s:%2$d</string>
+    <string name="devices_bound">%1$d device(s) bound</string>
+
+    <!-- Device List -->
+    <string name="usb_devices">USB Devices</string>
+    <string name="refresh">Refresh</string>
+    <string name="no_devices">No USB devices found</string>
+    <string name="bind">Bind</string>
+    <string name="unbind">Unbind</string>
+    <string name="unknown_device">Unknown Device</string>
+
+    <!-- Log -->
+    <string name="log">Log</string>
+    <string name="expand">Expand</string>
+    <string name="clear">Clear</string>
+    <string name="log_messages">Log Messages</string>
+    <string name="close">Close</string>
+    <string name="no_logs">No logs yet</string>
+
+    <!-- Toast Messages -->
+    <string name="please_start_server">Please start server first</string>
+    <string name="permission_denied">Permission denied</string>
+    <string name="bind_success">Device bound: %1$s</string>
+    <string name="bind_failed">Bind failed: %1$s</string>
+    <string name="unbind_success">Device unbound: %1$s</string>
+    <string name="unbind_failed">Unbind failed: %1$s</string>
+    <string name="device_detached">Device detached: %1$s</string>
+
+    <!-- Error Messages -->
+    <string name="error_device_not_found">Device not found</string>
+    <string name="error_device_in_use">Device is in use</string>
+    <string name="error_device_open_failed">Failed to open device</string>
+    <string name="error_get_descriptor_failed">Failed to get device descriptor</string>
+    <string name="error_get_config_failed">Failed to get configuration descriptor</string>
+    <string name="error_claim_interface_failed">Failed to claim interface</string>
+    <string name="error_unknown">Unknown error</string>
+
+    <!-- Language -->
+    <string name="language">Language</string>
+    <string name="language_en">English</string>
+    <string name="language_zh">中文</string>
+</resources>
