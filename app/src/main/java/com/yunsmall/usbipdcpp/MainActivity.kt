@@ -2,14 +2,19 @@ package com.yunsmall.usbipdcpp
 
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.os.Bundle
+import android.os.IBinder
 import android.util.Log
 import android.widget.Toast
 import java.net.NetworkInterface
 import java.util.Locale
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -36,7 +41,7 @@ import com.yunsmall.usbipdcpp.ui.theme.UsbipdcppTheme
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private val usbManager: UsbManager by lazy {
         getSystemService(USB_SERVICE) as UsbManager
@@ -48,18 +53,60 @@ class MainActivity : ComponentActivity() {
 
     private var refreshDevicesCallback: (() -> Unit)? = null
 
+    // 用于通知 Compose Service 状态变化
+    private var onServiceStateChanged: (() -> Unit)? = null
+
+    private var usbService: UsbService? = null
+    private var serviceBound = false
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as UsbService.UsbBinder
+            usbService = binder.getService()
+            serviceBound = true
+            refreshDevicesCallback?.invoke()
+            onServiceStateChanged?.invoke()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            usbService = null
+            serviceBound = false
+            onServiceStateChanged?.invoke()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         permissionManager.registerReceiver()
-        UsbIpNative.init()
+
+        // 启动并绑定 Service
+        val serviceIntent = Intent(this, UsbService::class.java)
+        startForegroundService(serviceIntent)
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
 
         setContent {
             UsbipdcppTheme {
+                // 用 State 观察 Service 变化
+                var serviceState by remember { mutableStateOf(Pair<UsbService?, Boolean>(null, false)) }
+
+                DisposableEffect(Unit) {
+                    onServiceStateChanged = {
+                        serviceState = Pair(usbService, serviceBound)
+                    }
+                    // 立即触发一次以获取当前状态
+                    serviceState = Pair(usbService, serviceBound)
+                    onDispose {
+                        onServiceStateChanged = null
+                    }
+                }
+
                 MainScreen(
                     usbManager = usbManager,
                     permissionManager = permissionManager,
+                    usbService = serviceState.first,
+                    serviceBound = serviceState.second,
                     onRefreshCallbackReady = { callback -> refreshDevicesCallback = callback }
                 )
             }
@@ -83,17 +130,21 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         permissionManager.unregisterReceiver()
-        UsbIpNative.runOnNativeThread {
-            if (UsbIpNative.isServerRunning()) {
-                UsbIpNative.stopServer()
-            }
-            UsbIpNative.release()
+        if (serviceBound) {
+            unbindService(serviceConnection)
+            serviceBound = false
         }
+        // 不停止 Service，让它继续运行
     }
 }
 
-fun setLanguage(context: Context, language: String) {
-    LocaleHelper.setAppLocale(context, if (language == "system") null else language)
+fun setLanguage(language: String) {
+    val localeList = if (language == "system") {
+        LocaleListCompat.getEmptyLocaleList()
+    } else {
+        LocaleListCompat.forLanguageTags(language)
+    }
+    AppCompatDelegate.setApplicationLocales(localeList)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,6 +152,8 @@ fun setLanguage(context: Context, language: String) {
 fun MainScreen(
     usbManager: UsbManager,
     permissionManager: UsbPermissionManager,
+    usbService: UsbService?,
+    serviceBound: Boolean,
     onRefreshCallbackReady: (() -> Unit) -> Unit = {}
 ) {
     var serverRunning by remember { mutableStateOf(false) }
@@ -123,6 +176,14 @@ fun MainScreen(
     fun refreshDevices() {
         devices = permissionManager.getDeviceList()
         addLog("Found ${devices.size} USB device(s)")
+    }
+
+    fun refreshState() {
+        usbService?.let { service ->
+            serverRunning = service.serverRunning
+            boundDevices = service.boundDeviceNames
+            portText = service.port.toString()
+        }
     }
 
     // 获取设备IP地址
@@ -171,11 +232,11 @@ fun MainScreen(
         }
     }
 
-    // 注册刷新回调给Activity
-    LaunchedEffect(Unit) {
+    // Service 状态变化时刷新
+    LaunchedEffect(serviceBound, usbService) {
         onRefreshCallbackReady { refreshDevices() }
         refreshDevices()
-        serverRunning = UsbIpNative.isServerRunning()
+        refreshState()
     }
 
     // 监听USB设备插入/拔出（通过BroadcastReceiver）
@@ -185,11 +246,9 @@ fun MainScreen(
         }
         permissionManager.setOnDeviceDetachedListener { device ->
             scope.launch {
-                val wasBound = withContext(UsbIpNative.nativeDispatcher) {
-                    UsbIpNative.handleDeviceDetached(device.deviceName)
-                }
+                val wasBound = usbService?.handleDeviceDetached(device.deviceName) ?: false
                 if (wasBound) {
-                    boundDevices = boundDevices - device.deviceName
+                    boundDevices = usbService?.boundDeviceNames ?: emptySet()
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
                         ?: context.getString(R.string.unknown_device)
                     Toast.makeText(context, context.getString(R.string.device_detached, deviceName), Toast.LENGTH_SHORT).show()
@@ -222,14 +281,14 @@ fun MainScreen(
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.language_en)) },
                                 onClick = {
-                                    setLanguage(context, "en")
+                                    setLanguage("en")
                                     showLanguageMenu = false
                                 }
                             )
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.language_zh)) },
                                 onClick = {
-                                    setLanguage(context, "zh")
+                                    setLanguage("zh")
                                     showLanguageMenu = false
                                 }
                             )
@@ -254,11 +313,14 @@ fun MainScreen(
                 onPortChange = { portText = it },
                 onStart = {
                     val port = portText.toIntOrNull() ?: 3240
+                    val service = usbService
+                    if (service == null) {
+                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        return@ServerControlPanel
+                    }
                     isStarting = true
                     scope.launch {
-                        val success = withContext(UsbIpNative.nativeDispatcher) {
-                            UsbIpNative.startServer(port)
-                        }
+                        val success = service.startServer(port)
                         isStarting = false
                         if (success) {
                             serverRunning = true
@@ -266,12 +328,14 @@ fun MainScreen(
                     }
                 },
                 onStop = {
+                    val service = usbService
+                    if (service == null) {
+                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        return@ServerControlPanel
+                    }
                     isStopping = true
                     scope.launch {
-                        withContext(UsbIpNative.nativeDispatcher) {
-                            UsbIpNative.stopServer()
-                            UsbIpNative.closeAllDevices()
-                        }
+                        service.stopServer()
                         isStopping = false
                         serverRunning = false
                         boundDevices = emptySet()
@@ -295,17 +359,20 @@ fun MainScreen(
                         Toast.makeText(context, context.getString(R.string.please_start_server), Toast.LENGTH_SHORT).show()
                         return@DeviceListSection
                     }
+                    val service = usbService
+                    if (service == null) {
+                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        return@DeviceListSection
+                    }
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
                         ?: context.getString(R.string.unknown_device)
                     permissionManager.requestPermission(device) { _, granted ->
                         if (granted) {
                             scope.launch {
-                                val result = withContext(UsbIpNative.nativeDispatcher) {
-                                    UsbIpNative.openAndBindDevice(usbManager, device)
-                                }
+                                val result = service.bindDevice(usbManager, device)
                                 when (result) {
                                     is DeviceBindResult.Success -> {
-                                        boundDevices = boundDevices + device.deviceName
+                                        boundDevices = service.boundDeviceNames
                                         Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
                                     }
                                     is DeviceBindResult.Failure -> {
@@ -319,15 +386,18 @@ fun MainScreen(
                     }
                 },
                 onUnbindDevice = { device ->
+                    val service = usbService
+                    if (service == null) {
+                        Toast.makeText(context, "Service not ready", Toast.LENGTH_SHORT).show()
+                        return@DeviceListSection
+                    }
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
                         ?: context.getString(R.string.unknown_device)
                     scope.launch {
-                        val result = withContext(UsbIpNative.nativeDispatcher) {
-                            UsbIpNative.unbindDevice(device.deviceName)
-                        }
+                        val result = service.unbindDevice(device.deviceName)
                         when (result) {
                             is DeviceUnbindResult.Success -> {
-                                boundDevices = boundDevices - device.deviceName
+                                boundDevices = service.boundDeviceNames
                                 Toast.makeText(context, context.getString(R.string.unbind_success, deviceName), Toast.LENGTH_SHORT).show()
                             }
                             is DeviceUnbindResult.Failure -> {

@@ -41,9 +41,9 @@ object UsbIpNative {
 
     external fun nativeInit(): Boolean
     external fun setLogCallback(callback: LogCallback)
-    private external fun bindUsbDeviceNative(fd: Int, vendorId: Int, productId: Int, outBusid: Array<String?>): Int
-    private external fun unbindUsbDeviceNative(fd: Int): Int
-    private external fun notifyDeviceRemovedNative(busid: String)
+    external fun bindUsbDeviceNative(fd: Int, vendorId: Int, productId: Int, outBusid: Array<String?>): Int
+    external fun unbindUsbDeviceNative(fd: Int): Int
+    external fun notifyDeviceRemovedNative(busid: String)
     external fun getBoundDevices(): Array<String>
     external fun startServer(port: Int): Boolean
     external fun stopServer()
