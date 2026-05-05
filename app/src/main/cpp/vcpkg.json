@@ -1,12 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "usbipdcpp-android",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Android USB/IP server using usbipdcpp",
   "dependencies": [
     {
-      "name": "usbipdcpp",
-      "features": ["libusb"]
+      "name": "yunsmall-usbipdcpp",
+      "features": ["physical-usb-forwarding"]
     }
   ]
 }

@@ -56,4 +56,12 @@
     <string name="language">Language</string>
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
+
+    <!-- About -->
+    <string name="about">About</string>
+    <string name="about_title">USB/IP Server</string>
+    <string name="about_description">Share USB devices over network using USB/IP protocol.</string>
+    <string name="about_version">Version: %1$s</string>
+    <string name="about_github">GitHub: yunsmall/Android-Usbipdcpp</string>
+    <string name="about_license">License: GPL-3.0</string>
 </resources>

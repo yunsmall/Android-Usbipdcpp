@@ -5,6 +5,7 @@ import android.hardware.usb.UsbManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
@@ -165,6 +166,7 @@ fun MainScreen(
     var boundDevices by remember { mutableStateOf(setOf<String>()) }
     var showFullLog by remember { mutableStateOf(false) }
     var showLanguageMenu by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -270,6 +272,9 @@ fun MainScreen(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
                 actions = {
+                    TextButton(onClick = { showAbout = true }) {
+                        Text(stringResource(R.string.about))
+                    }
                     Box {
                         TextButton(onClick = { showLanguageMenu = true }) {
                             Text(stringResource(R.string.language))
@@ -421,6 +426,37 @@ fun MainScreen(
         FullLogDialog(
             logMessages = logMessages,
             onDismiss = { showFullLog = false }
+        )
+    }
+
+    if (showAbout) {
+        val version = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        val githubUrl = "https://github.com/yunsmall/Android-Usbipdcpp"
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text(stringResource(R.string.about_title)) },
+            text = {
+                Column {
+                    Text(stringResource(R.string.about_description))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(stringResource(R.string.about_version, version))
+                    Text(stringResource(R.string.about_license))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(githubUrl))
+                            context.startActivity(intent)
+                        }
+                    ) {
+                        Text(stringResource(R.string.about_github), color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAbout = false }) {
+                    Text(stringResource(R.string.close))
+                }
+            }
         )
     }
 }

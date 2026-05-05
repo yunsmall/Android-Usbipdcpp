@@ -56,4 +56,12 @@
     <string name="language">语言</string>
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
+
+    <!-- About -->
+    <string name="about">关于</string>
+    <string name="about_title">USB/IP 服务器</string>
+    <string name="about_description">使用 USB/IP 协议通过网络共享 USB 设备。</string>
+    <string name="about_version">版本: %1$s</string>
+    <string name="about_github">GitHub: yunsmall/Android-Usbipdcpp</string>
+    <string name="about_license">许可证: GPL-3.0</string>
 </resources>
