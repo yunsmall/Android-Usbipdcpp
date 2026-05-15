@@ -167,6 +167,7 @@ fun MainScreen(
     var showFullLog by remember { mutableStateOf(false) }
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
+    var busyDevices by remember { mutableStateOf(setOf<String>()) }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -242,15 +243,18 @@ fun MainScreen(
     }
 
     // 监听USB设备插入/拔出（通过BroadcastReceiver）
+    // 用 rememberUpdatedState 确保 lambda 始终读取最新值，不会被 DisposableEffect 捕获旧引用
+    val currentService by rememberUpdatedState(usbService)
     DisposableEffect(permissionManager) {
         permissionManager.setOnDeviceAttachedListener {
             refreshDevices()
         }
         permissionManager.setOnDeviceDetachedListener { device ->
             scope.launch {
-                val wasBound = usbService?.handleDeviceDetached(device.deviceName) ?: false
+                val service = currentService
+                val wasBound = service?.handleDeviceDetached(device.deviceName) ?: false
+                boundDevices = service?.boundDeviceNames ?: emptySet()
                 if (wasBound) {
-                    boundDevices = usbService?.boundDeviceNames ?: emptySet()
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
                         ?: context.getString(R.string.unknown_device)
                     Toast.makeText(context, context.getString(R.string.device_detached, deviceName), Toast.LENGTH_SHORT).show()
@@ -358,6 +362,7 @@ fun MainScreen(
             DeviceListSection(
                 devices = devices,
                 boundDevices = boundDevices,
+                busyDevices = busyDevices,
                 serverRunning = serverRunning,
                 onBindDevice = { device ->
                     if (!serverRunning) {
@@ -374,15 +379,21 @@ fun MainScreen(
                     permissionManager.requestPermission(device) { _, granted ->
                         if (granted) {
                             scope.launch {
-                                val result = service.bindDevice(usbManager, device)
-                                when (result) {
-                                    is DeviceBindResult.Success -> {
-                                        boundDevices = service.boundDeviceNames
-                                        Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
+                                busyDevices = busyDevices + device.deviceName
+                                try {
+                                    val result = service.bindDevice(usbManager, device)
+                                    // 无论成功失败都刷新，确保 UI 与 Service 状态一致
+                                    boundDevices = service.boundDeviceNames
+                                    when (result) {
+                                        is DeviceBindResult.Success -> {
+                                            Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
+                                        }
+                                        is DeviceBindResult.Failure -> {
+                                            Toast.makeText(context, context.getString(R.string.bind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
+                                        }
                                     }
-                                    is DeviceBindResult.Failure -> {
-                                        Toast.makeText(context, context.getString(R.string.bind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
-                                    }
+                                } finally {
+                                    busyDevices = busyDevices - device.deviceName
                                 }
                             }
                         } else {
@@ -399,15 +410,21 @@ fun MainScreen(
                     val deviceName = device.productName?.takeIf { it.isNotEmpty() }
                         ?: context.getString(R.string.unknown_device)
                     scope.launch {
-                        val result = service.unbindDevice(device.deviceName)
-                        when (result) {
-                            is DeviceUnbindResult.Success -> {
-                                boundDevices = service.boundDeviceNames
-                                Toast.makeText(context, context.getString(R.string.unbind_success, deviceName), Toast.LENGTH_SHORT).show()
+                        busyDevices = busyDevices + device.deviceName
+                        try {
+                            val result = service.unbindDevice(device.deviceName)
+                            // 无论成功失败都刷新，确保 UI 与 Service 状态一致
+                            boundDevices = service.boundDeviceNames
+                            when (result) {
+                                is DeviceUnbindResult.Success -> {
+                                    Toast.makeText(context, context.getString(R.string.unbind_success, deviceName), Toast.LENGTH_SHORT).show()
+                                }
+                                is DeviceUnbindResult.Failure -> {
+                                    Toast.makeText(context, context.getString(R.string.unbind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
+                                }
                             }
-                            is DeviceUnbindResult.Failure -> {
-                                Toast.makeText(context, context.getString(R.string.unbind_failed, result.getMessage(context)), Toast.LENGTH_SHORT).show()
-                            }
+                        } finally {
+                            busyDevices = busyDevices - device.deviceName
                         }
                     }
                 },
@@ -602,6 +619,7 @@ fun StatusCard(
 fun ColumnScope.DeviceListSection(
     devices: Map<String, UsbDevice>,
     boundDevices: Set<String>,
+    busyDevices: Set<String>,
     serverRunning: Boolean,
     onBindDevice: (UsbDevice) -> Unit,
     onUnbindDevice: (UsbDevice) -> Unit,
@@ -610,7 +628,7 @@ fun ColumnScope.DeviceListSection(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .weight(1f, fill = false)
+            .weight(1.5f, fill = false)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -641,7 +659,7 @@ fun ColumnScope.DeviceListSection(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 200.dp),
+                        .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(devices.entries.toList()) { entry ->
@@ -651,6 +669,7 @@ fun ColumnScope.DeviceListSection(
                         DeviceItem(
                             device = device,
                             isBound = isBound,
+                            isBusy = busyDevices.contains(device.deviceName),
                             canBind = serverRunning && !isBound,
                             onBind = { onBindDevice(device) },
                             onUnbind = { onUnbindDevice(device) }
@@ -666,6 +685,7 @@ fun ColumnScope.DeviceListSection(
 fun DeviceItem(
     device: UsbDevice,
     isBound: Boolean,
+    isBusy: Boolean,
     canBind: Boolean,
     onBind: () -> Unit,
     onUnbind: () -> Unit
@@ -691,7 +711,12 @@ fun DeviceItem(
             )
         }
 
-        if (isBound) {
+        if (isBusy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp
+            )
+        } else if (isBound) {
             TextButton(onClick = onUnbind, modifier = Modifier.height(36.dp)) {
                 Text(stringResource(R.string.unbind), fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
             }

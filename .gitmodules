@@ -1,0 +1,3 @@
+[submodule "app/src/main/cpp/usbipdcpp"]
+	path = app/src/main/cpp/usbipdcpp
+	url = git@github.com:yunsmall/usbipdcpp.git

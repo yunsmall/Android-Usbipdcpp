@@ -26,7 +26,10 @@ project("usbipdcpp_native")
 
 set(CMAKE_CXX_STANDARD 23)
 
-find_package(usbipdcpp CONFIG REQUIRED COMPONENTS libusb)
+# find_package(usbipdcpp CONFIG REQUIRED COMPONENTS libusb)
+
+set(USBIPDCPP_BUILD_LIBUSB_COMPONENTS ON)
+add_subdirectory(usbipdcpp)
 
 add_library(usbipdcpp_native SHARED
     usbipd_jni.cpp
@@ -34,8 +37,8 @@ add_library(usbipdcpp_native SHARED
 )
 
 target_link_libraries(usbipdcpp_native
-    usbipdcpp::usbipdcpp
-    usbipdcpp::libusb
+    usbipdcpp
+    usbipdcpp_libusb
     android
     log
 )

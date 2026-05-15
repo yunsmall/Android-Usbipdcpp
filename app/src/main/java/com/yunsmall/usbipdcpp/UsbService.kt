@@ -92,14 +92,14 @@ class UsbService : Service() {
     suspend fun stopServer() {
         withContext(UsbIpNative.nativeDispatcher) {
             UsbIpNative.stopServer()
-            closeAllDevices()
             serverRunning = false
         }
+        closeAllDevices()
         updateNotification()
     }
 
     suspend fun bindDevice(usbManager: UsbManager, device: UsbDevice): DeviceBindResult {
-        return withContext(UsbIpNative.nativeDispatcher) {
+        val result = withContext(UsbIpNative.nativeDispatcher) {
             val connection = usbManager.openDevice(device)
             if (connection == null) {
                 return@withContext DeviceBindResult.Failure.DeviceOpenFailed
@@ -112,9 +112,9 @@ class UsbService : Service() {
             }
 
             val outBusid = arrayOfNulls<String>(1)
-            val result = UsbIpNative.bindUsbDeviceNative(fd, device.vendorId, device.productId, outBusid)
+            val nativeResult = UsbIpNative.bindUsbDeviceNative(fd, device.vendorId, device.productId, outBusid)
 
-            when (result) {
+            when (nativeResult) {
                 UsbIpNative.ErrorCode.SUCCESS -> {
                     val busid = outBusid[0]!!
                     activeDevices[device.deviceName] = DeviceInfo(connection, fd, busid)
@@ -123,41 +123,48 @@ class UsbService : Service() {
                 }
                 else -> {
                     connection.close()
-                    mapErrorCodeToResult(result)
+                    mapErrorCodeToResult(nativeResult)
                 }
             }
         }
+        return result
     }
 
     suspend fun unbindDevice(deviceName: String): DeviceUnbindResult {
-        return withContext(UsbIpNative.nativeDispatcher) {
+        val result = withContext(UsbIpNative.nativeDispatcher) {
             val info = activeDevices[deviceName]
             if (info == null) {
                 return@withContext DeviceUnbindResult.Failure.DeviceNotFound
             }
 
-            val result = UsbIpNative.unbindUsbDeviceNative(info.fd)
+            val nativeResult = UsbIpNative.unbindUsbDeviceNative(info.fd)
 
-            when (result) {
+            when (nativeResult) {
                 UsbIpNative.ErrorCode.SUCCESS -> {
                     activeDevices.remove(deviceName)?.connection?.close()
                     Log.i(TAG, "Device unbound: $deviceName")
                     DeviceUnbindResult.Success
                 }
+                UsbIpNative.ErrorCode.DEVICE_NOT_FOUND -> {
+                    activeDevices.remove(deviceName)?.connection?.close()
+                    Log.w(TAG, "Device already gone in native: $deviceName")
+                    DeviceUnbindResult.Failure.DeviceNotFound
+                }
                 UsbIpNative.ErrorCode.DEVICE_IN_USE -> {
                     DeviceUnbindResult.Failure.DeviceInUse
                 }
                 else -> {
-                    activeDevices.remove(deviceName)?.connection?.close()
-                    DeviceUnbindResult.Failure.DeviceNotFound
+                    Log.e(TAG, "Unknown unbind error: $nativeResult for $deviceName")
+                    DeviceUnbindResult.Failure.UnknownError
                 }
             }
         }
+        return result
     }
 
-    fun handleDeviceDetached(deviceName: String): Boolean {
+    suspend fun handleDeviceDetached(deviceName: String): Boolean {
         val info = activeDevices[deviceName] ?: return false
-        UsbIpNative.runOnNativeThread {
+        withContext(UsbIpNative.nativeDispatcher) {
             UsbIpNative.notifyDeviceRemovedNative(info.busid)
         }
         activeDevices.remove(deviceName)?.connection?.close()

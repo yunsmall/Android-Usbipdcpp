@@ -4,9 +4,8 @@
   "version": "1.0.2",
   "description": "Android USB/IP server using usbipdcpp",
   "dependencies": [
-    {
-      "name": "yunsmall-usbipdcpp",
-      "features": ["physical-usb-forwarding"]
-    }
+    "libusb",
+    "asio",
+    "spdlog"
   ]
 }

@@ -39,8 +39,11 @@ Android Device                    Remote Computer
 ## 🔨 Build
 
 ```bash
-# Clone
-git clone https://github.com/yunsmall/Android-Usbipdcpp.git
+# Clone with submodules
+git clone --recurse-submodules https://github.com/yunsmall/Android-Usbipdcpp.git
+
+# Or if already cloned, initialize submodules
+git submodule update --init --recursive
 
 # Build with Android Studio (NDK required)
 ```

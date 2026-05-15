@@ -2,16 +2,14 @@
 #include <android/log.h>
 #include <memory>
 #include <mutex>
-#include <set>
-
 #include <libusb-1.0/libusb.h>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/android_sink.h>
 
-#include <usbipdcpp/Server.h>
-#include <usbipdcpp/LibusbHandler/LibusbServer.h>
-#include <usbipdcpp/LibusbHandler/tools.h>
+#include <Server.h>
+#include <LibusbHandler/LibusbServer.h>
+#include <LibusbHandler/tools.h>
 
 #include "jni_callback_sink.h"
 #include "jni_log_callback.h"
@@ -36,8 +34,6 @@ namespace {
     std::unique_ptr<usbipdcpp::LibusbServer> g_server;
     std::atomic<bool> g_initialized{false};
     std::atomic<bool> g_server_running{false};
-
-    std::set<std::string> g_bound_devices;
 
     int toErrorCode(usbipdcpp::DeviceOperationResult result) {
         using namespace usbipdcpp;
@@ -144,10 +140,9 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
         return ErrorCode::DEVICE_NOT_FOUND;
     }
 
-    std::string busid = usbipdcpp::get_device_busid(dev);
+    std::string busid = usbipdcpp::get_device_busid(dev, true);
     libusb_close(temp_handle);
 
-    g_bound_devices.insert(busid);
     spdlog::info("Device bound successfully: {}", busid);
 
     // 输出 busid
@@ -180,6 +175,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServer(JNIEnv* env, jobject thiz, j
     try {
         g_server = std::make_unique<usbipdcpp::LibusbServer>();
         g_server->set_hotplug_enabled(false);
+        g_server->set_busid_include_address(true);
         asio::ip::tcp::endpoint endpoint(asio::ip::tcp::v4(), static_cast<unsigned short>(port));
         g_server->start(endpoint);
         g_server_running = true;
@@ -213,7 +209,6 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServer(JNIEnv* env, jobject thiz) {
         g_server->stop();
         g_server.reset();
         g_server_running = false;
-        g_bound_devices.clear();
 
         spdlog::info("Server stopped successfully");
     } catch (const std::exception& e) {
@@ -274,22 +269,6 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_notifyDeviceRemovedNative(
     }
 
     g_server->notify_device_removed(busid_str);
-    // 从本地集合中移除
-    g_bound_devices.erase(busid_str);
-}
-
-JNIEXPORT jobjectArray JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_getBoundDevices(JNIEnv* env, jobject thiz) {
-    jclass stringClass = env->FindClass("java/lang/String");
-    auto size = static_cast<jsize>(g_bound_devices.size());
-    jobjectArray result = env->NewObjectArray(size, stringClass, nullptr);
-
-    int i = 0;
-    for (const auto& busid : g_bound_devices) {
-        env->SetObjectArrayElement(result, i++, env->NewStringUTF(busid.c_str()));
-    }
-
-    return result;
 }
 
 JNIEXPORT void JNICALL

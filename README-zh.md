@@ -39,8 +39,11 @@ Android 设备                      远程计算机
 ## 🔨 编译
 
 ```bash
-# 克隆
-git clone https://github.com/yunsmall/Android-Usbipdcpp.git
+# 克隆（含子模块）
+git clone --recurse-submodules https://github.com/yunsmall/Android-Usbipdcpp.git
+
+# 如果已克隆但未初始化子模块
+git submodule update --init --recursive
 
 # 使用 Android Studio 编译（需要 NDK）
 ```
