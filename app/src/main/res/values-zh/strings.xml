@@ -29,6 +29,7 @@
     <!-- Log -->
     <string name="log">日志</string>
     <string name="expand">展开</string>
+    <string name="copy">复制</string>
     <string name="clear">清空</string>
     <string name="log_messages">日志消息</string>
     <string name="close">关闭</string>
@@ -56,6 +57,11 @@
     <string name="language">语言</string>
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
+
+    <!-- Copy -->
+    <string name="copy_ip">复制 IP: %1$s</string>
+    <string name="copy_port">复制端口: %1$d</string>
+    <string name="copy_address">复制 %1$s:%2$d</string>
 
     <!-- About -->
     <string name="about">关于</string>

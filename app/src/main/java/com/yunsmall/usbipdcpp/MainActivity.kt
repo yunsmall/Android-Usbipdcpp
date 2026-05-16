@@ -2,6 +2,8 @@ package com.yunsmall.usbipdcpp
 
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -19,12 +21,14 @@ import androidx.core.os.LocaleListCompat
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -364,6 +368,7 @@ fun MainScreen(
                 boundDevices = boundDevices,
                 busyDevices = busyDevices,
                 serverRunning = serverRunning,
+                getBusid = { usbService?.getBusid(it) },
                 onBindDevice = { device ->
                     if (!serverRunning) {
                         Toast.makeText(context, context.getString(R.string.please_start_server), Toast.LENGTH_SHORT).show()
@@ -434,7 +439,12 @@ fun MainScreen(
             LogSection(
                 logMessages = logMessages,
                 onClear = { logMessages = emptyList() },
-                onViewFullLog = { showFullLog = true }
+                onViewFullLog = { showFullLog = true },
+                onCopyLog = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Log", logMessages.joinToString("\n")))
+                    Toast.makeText(context, "Log copied", Toast.LENGTH_SHORT).show()
+                }
             )
         }
     }
@@ -567,49 +577,86 @@ fun StatusCard(
     ipAddress: String?,
     port: Int
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (serverRunning)
-                MaterialTheme.colorScheme.primaryContainer
-            else
-                MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Row(
+    var showCopyMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    Box {
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(12.dp)
-                    .background(
-                        if (serverRunning) Color.Green else Color.Red,
-                        RoundedCornerShape(50)
-                    )
+                .clickable(enabled = serverRunning) { showCopyMenu = true },
+            colors = CardDefaults.cardColors(
+                containerColor = if (serverRunning)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
+                    MaterialTheme.colorScheme.surfaceVariant
             )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column {
-                Text(
-                    text = if (serverRunning) stringResource(R.string.server_running) else stringResource(R.string.server_stopped),
-                    style = MaterialTheme.typography.titleMedium
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .background(
+                            if (serverRunning) Color.Green else Color.Red,
+                            RoundedCornerShape(50)
+                        )
                 )
-                if (serverRunning) {
-                    ipAddress?.let {
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column {
+                    Text(
+                        text = if (serverRunning) stringResource(R.string.server_running) else stringResource(R.string.server_stopped),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    if (serverRunning) {
+                        ipAddress?.let {
+                            Text(
+                                text = stringResource(R.string.address, it, port),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                         Text(
-                            text = stringResource(R.string.address, it, port),
+                            text = stringResource(R.string.devices_bound, boundCount),
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
-                    Text(
-                        text = stringResource(R.string.devices_bound, boundCount),
-                        style = MaterialTheme.typography.bodySmall
-                    )
                 }
+            }
+        }
+
+        DropdownMenu(
+            expanded = showCopyMenu,
+            onDismissRequest = { showCopyMenu = false }
+        ) {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            ipAddress?.let { ip ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.copy_ip, ip)) },
+                    onClick = {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("IP", ip))
+                        showCopyMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.copy_port, port)) },
+                    onClick = {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Port", port.toString()))
+                        showCopyMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.copy_address, ip, port)) },
+                    onClick = {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Address", "$ip:$port"))
+                        showCopyMenu = false
+                    }
+                )
             }
         }
     }
@@ -621,6 +668,7 @@ fun ColumnScope.DeviceListSection(
     boundDevices: Set<String>,
     busyDevices: Set<String>,
     serverRunning: Boolean,
+    getBusid: (String) -> String?,
     onBindDevice: (UsbDevice) -> Unit,
     onUnbindDevice: (UsbDevice) -> Unit,
     onRefresh: () -> Unit
@@ -666,10 +714,12 @@ fun ColumnScope.DeviceListSection(
                         val device = entry.value
                         val isBound = boundDevices.contains(device.deviceName)
 
+                        val busid = getBusid(device.deviceName)
                         DeviceItem(
                             device = device,
                             isBound = isBound,
                             isBusy = busyDevices.contains(device.deviceName),
+                            busid = busid,
                             canBind = serverRunning && !isBound,
                             onBind = { onBindDevice(device) },
                             onUnbind = { onUnbindDevice(device) }
@@ -686,6 +736,7 @@ fun DeviceItem(
     device: UsbDevice,
     isBound: Boolean,
     isBusy: Boolean,
+    busid: String?,
     canBind: Boolean,
     onBind: () -> Unit,
     onUnbind: () -> Unit
@@ -709,6 +760,13 @@ fun DeviceItem(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (busid != null) {
+                Text(
+                    text = "BUSID: $busid",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         if (isBusy) {
@@ -732,7 +790,8 @@ fun DeviceItem(
 fun ColumnScope.LogSection(
     logMessages: List<String>,
     onClear: () -> Unit,
-    onViewFullLog: () -> Unit
+    onViewFullLog: () -> Unit,
+    onCopyLog: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -749,6 +808,9 @@ fun ColumnScope.LogSection(
                 Row {
                     TextButton(onClick = onViewFullLog) {
                         Text(stringResource(R.string.expand))
+                    }
+                    TextButton(onClick = onCopyLog) {
+                        Text(stringResource(R.string.copy))
                     }
                     TextButton(onClick = onClear) {
                         Text(stringResource(R.string.clear))
@@ -805,17 +867,19 @@ fun FullLogDialog(logMessages: List<String>, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.log_messages)) },
         text = {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 400.dp)
-                    .verticalScroll(scrollState)
-            ) {
-                Text(
-                    text = logMessages.joinToString("\n"),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.fillMaxWidth()
-                )
+            SelectionContainer {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .verticalScroll(scrollState)
+                ) {
+                    Text(
+                        text = logMessages.joinToString("\n"),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         },
         confirmButton = {

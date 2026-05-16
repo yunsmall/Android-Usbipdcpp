@@ -29,6 +29,7 @@
     <!-- Log -->
     <string name="log">Log</string>
     <string name="expand">Expand</string>
+    <string name="copy">Copy</string>
     <string name="clear">Clear</string>
     <string name="log_messages">Log Messages</string>
     <string name="close">Close</string>
@@ -56,6 +57,11 @@
     <string name="language">Language</string>
     <string name="language_en">English</string>
     <string name="language_zh">中文</string>
+
+    <!-- Copy -->
+    <string name="copy_ip">Copy IP: %1$s</string>
+    <string name="copy_port">Copy Port: %1$d</string>
+    <string name="copy_address">Copy %1$s:%2$d</string>
 
     <!-- About -->
     <string name="about">About</string>

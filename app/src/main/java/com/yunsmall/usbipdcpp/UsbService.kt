@@ -46,6 +46,8 @@ class UsbService : Service() {
     val boundDeviceNames: Set<String>
         get() = activeDevices.keys
 
+    fun getBusid(deviceName: String): String? = activeDevices[deviceName]?.busid
+
     inner class UsbBinder : Binder() {
         fun getService(): UsbService = this@UsbService
     }
