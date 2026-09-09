@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-📱🔌 一个 Android USB/IP 服务端应用，通过网络共享 USB 设备。
+📱🔌 一个 Android USB/IP 服务端应用，通过网络共享 USB 设备，基于一个专门用于创建usbip服务器的库——[usbipdcpp](https://github.com/yunsmall/usbipdcpp)。
 
 ## ✨ 功能
 
