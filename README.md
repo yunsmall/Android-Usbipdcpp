@@ -1,6 +1,6 @@
 # Android-Usbipdcpp
 
-[中文](README-zh.md)
+[中文](README.zh.md)
 
 📱🔌 An Android USB/IP server application for sharing USB devices over the network, based on [usbipdcpp](https://github.com/yunsmall/usbipdcpp), a dedicated library for developing USB/IP servers.
 
