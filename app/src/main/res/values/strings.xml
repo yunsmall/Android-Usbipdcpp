@@ -52,6 +52,7 @@
     <string name="error_get_descriptor_failed">Failed to get device descriptor</string>
     <string name="error_get_config_failed">Failed to get configuration descriptor</string>
     <string name="error_claim_interface_failed">Failed to claim interface</string>
+    <string name="error_hub_filtered">USB hubs can\'t be exported</string>
     <string name="error_unknown">Unknown error</string>
     <string name="service_not_ready">Service not ready</string>
     <string name="log_copied">Log copied</string>

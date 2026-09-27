@@ -15,6 +15,7 @@ sealed class DeviceBindResult {
         object GetDescriptorFailed : Failure()
         object GetConfigFailed : Failure()
         object ClaimInterfaceFailed : Failure()
+        object HubFiltered : Failure()
         object UnknownError : Failure()
 
         fun getMessage(context: Context): String = when (this) {
@@ -24,6 +25,7 @@ sealed class DeviceBindResult {
             GetDescriptorFailed -> context.getString(R.string.error_get_descriptor_failed)
             GetConfigFailed -> context.getString(R.string.error_get_config_failed)
             ClaimInterfaceFailed -> context.getString(R.string.error_claim_interface_failed)
+            HubFiltered -> context.getString(R.string.error_hub_filtered)
             UnknownError -> context.getString(R.string.error_unknown)
         }
     }

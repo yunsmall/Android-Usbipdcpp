@@ -58,6 +58,8 @@ object UsbIpNative {
         const val GET_DESCRIPTOR_FAILED = 4
         const val GET_CONFIG_FAILED = 5
         const val CLAIM_INTERFACE_FAILED = 6
+        const val DEVICE_ALREADY_BOUND = 7
+        const val HUB_FILTERED = 8
         const val UNKNOWN_ERROR = 99
     }
 
@@ -148,10 +150,13 @@ object UsbIpNative {
     private fun errorCodeToBindFailure(code: Int): DeviceBindResult.Failure = when (code) {
         ErrorCode.DEVICE_NOT_FOUND -> DeviceBindResult.Failure.DeviceNotFound
         ErrorCode.DEVICE_IN_USE -> DeviceBindResult.Failure.DeviceInUse
+        // 同 busid 已绑定同样表示"用不了"，复用同一提示
+        ErrorCode.DEVICE_ALREADY_BOUND -> DeviceBindResult.Failure.DeviceInUse
         ErrorCode.DEVICE_OPEN_FAILED -> DeviceBindResult.Failure.DeviceOpenFailed
         ErrorCode.GET_DESCRIPTOR_FAILED -> DeviceBindResult.Failure.GetDescriptorFailed
         ErrorCode.GET_CONFIG_FAILED -> DeviceBindResult.Failure.GetConfigFailed
         ErrorCode.CLAIM_INTERFACE_FAILED -> DeviceBindResult.Failure.ClaimInterfaceFailed
+        ErrorCode.HUB_FILTERED -> DeviceBindResult.Failure.HubFiltered
         else -> DeviceBindResult.Failure.UnknownError
     }
 }

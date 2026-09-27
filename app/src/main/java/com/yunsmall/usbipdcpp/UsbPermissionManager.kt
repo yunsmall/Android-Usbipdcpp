@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
@@ -115,7 +116,21 @@ class UsbPermissionManager(
     }
 
     fun getDeviceList(): Map<String, UsbDevice> {
-        return usbManager.deviceList
+        // hub 对 USB/IP 导出无意义（导出的是拓扑节点而非功能设备）。
+        // 上游 AOSP 已在 UsbHostManager 里把 hub 从 UsbManager 剔除，这里再滤一道：
+        // 定制 ROM 可能改掉该行为，界面不该出现这种设备
+        return usbManager.deviceList.filterValues { !isHubDevice(it) }
+    }
+
+    // 对齐 AOSP UsbHostManager 的 hub 判定：设备描述符声明了 hub 类的直接算；
+    // 描述符没给类（bDeviceClass=0）的从接口取，全部接口都是 hub 类才算，
+    // 避免误伤带 hub 的复合设备
+    private fun isHubDevice(device: UsbDevice): Boolean {
+        if (device.deviceClass == UsbConstants.USB_CLASS_HUB) return true
+        if (device.deviceClass != 0 || device.interfaceCount == 0) return false
+        return (0 until device.interfaceCount).all {
+            device.getInterface(it).interfaceClass == UsbConstants.USB_CLASS_HUB
+        }
     }
 
     fun hasPermission(device: UsbDevice): Boolean {

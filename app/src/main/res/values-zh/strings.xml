@@ -52,6 +52,7 @@
     <string name="error_get_descriptor_failed">获取设备描述符失败</string>
     <string name="error_get_config_failed">获取配置描述符失败</string>
     <string name="error_claim_interface_failed">声明接口失败</string>
+    <string name="error_hub_filtered">不支持导出集线器（Hub）设备</string>
     <string name="error_unknown">未知错误</string>
     <string name="service_not_ready">服务未就绪</string>
     <string name="log_copied">日志已复制</string>

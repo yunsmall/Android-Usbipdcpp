@@ -30,6 +30,9 @@ set(CMAKE_CXX_STANDARD 23)
 
 set(USBIPDCPP_BUILD_LIBUSB_COMPONENTS ON)
 set(USBIPDCPP_BUILD_SHARED_LIBS OFF)
+# 本应用只做 USB 设备转发，不使用虚拟设备组件（那是给 PC 端模拟设备用的），
+# 关掉免得它的 target 和源码跟着参与配置
+set(USBIPDCPP_BUILD_VIRTUAL_DEVICE OFF)
 add_subdirectory(usbipdcpp)
 
 add_library(usbipdcpp_native SHARED

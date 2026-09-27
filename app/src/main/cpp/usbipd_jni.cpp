@@ -25,6 +25,8 @@ namespace ErrorCode {
     constexpr int GET_DESCRIPTOR_FAILED = 4;
     constexpr int GET_CONFIG_FAILED = 5;
     constexpr int CLAIM_INTERFACE_FAILED = 6;
+    constexpr int DEVICE_ALREADY_BOUND = 7;
+    constexpr int HUB_FILTERED = 8;
     constexpr int UNKNOWN_ERROR = 99;
 }
 
@@ -42,10 +44,14 @@ namespace {
             case DeviceOperationResult::Success: return ErrorCode::SUCCESS;
             case DeviceOperationResult::DeviceNotFound: return ErrorCode::DEVICE_NOT_FOUND;
             case DeviceOperationResult::DeviceInUse: return ErrorCode::DEVICE_IN_USE;
+            case DeviceOperationResult::DeviceAlreadyBound: return ErrorCode::DEVICE_ALREADY_BOUND;
             case DeviceOperationResult::DeviceOpenFailed: return ErrorCode::DEVICE_OPEN_FAILED;
             case DeviceOperationResult::GetDescriptorFailed: return ErrorCode::GET_DESCRIPTOR_FAILED;
             case DeviceOperationResult::GetConfigFailed: return ErrorCode::GET_CONFIG_FAILED;
             case DeviceOperationResult::ClaimInterfaceFailed: return ErrorCode::CLAIM_INTERFACE_FAILED;
+            case DeviceOperationResult::HubFiltered: return ErrorCode::HUB_FILTERED;
+            // DeviceFiltered 只在设置了 device_bind_filter 时才会出现，本应用没设，
+            // 归入未知错误即可
             default: return ErrorCode::UNKNOWN_ERROR;
         }
     }
