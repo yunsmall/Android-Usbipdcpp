@@ -1,21 +1,20 @@
-# 手动编译 APK（仅验证编译，不发布）
-name: Build APK
+# 提交与 PR 的编译验证：只构建 debug，不发布任何产物
+name: Build Check
 
 on:
-  workflow_dispatch:
-    inputs:
-      build_type:
-        description: '构建类型'
-        required: true
-        type: choice
-        default: 'debug'
-        options:
-          - debug
-          - release
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
 
 jobs:
   build:
-    name: Build ${{ inputs.build_type }} APK
+    name: Build Debug APK
     runs-on: ubuntu-24.04
 
     steps:
@@ -58,7 +57,7 @@ jobs:
       - name: 缓存 vcpkg 二进制缓存
         uses: actions/cache@v4
         with:
-          # 此处配置需与 release.yml、build-check.yml 完全一致，三处共享同一份缓存
+          # 此处配置需与 release.yml、build-apk.yml 完全一致，三处共享同一份缓存
           path: ~/vcpkg-binary-cache
           key: vcpkg-bincache-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
           restore-keys: vcpkg-bincache-
@@ -66,14 +65,15 @@ jobs:
       - name: 安装构建工具（vcpkg libusb 需要 autotools）
         run: sudo apt-get install -y autoconf autoconf-archive automake libtool
 
-      - name: 编译 APK
+      - name: 编译 Debug APK
         run: |
           chmod +x gradlew
-          ./gradlew assemble${{ inputs.build_type == 'debug' && 'Debug' || 'Release' }}
+          ./gradlew assembleDebug
 
-      - name: 上传 artifact
+      - name: 上传 Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: usbipdcpp-${{ inputs.build_type }}
-          path: app/build/outputs/apk/${{ inputs.build_type }}/*.apk
+          # 编译已经花了几分钟，导出产物只需几秒；带 sha 便于区分是哪次提交的
+          name: usbipdcpp-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

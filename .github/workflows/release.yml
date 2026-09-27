@@ -47,6 +47,11 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git ~/vcpkg
           echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+          # manifest 模式（vcpkg.json + CMAKE_TOOLCHAIN_FILE）下依赖走二进制缓存，
+          # 默认落在 ~/.cache/vcpkg/archives；显式指定固定目录，缓存路径才可控
+          # （~/vcpkg/packages、~/vcpkg/buildtrees 只有经典模式 install 才用，这里是空的）
+          mkdir -p "$HOME/vcpkg-binary-cache"
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$HOME/vcpkg-binary-cache" >> $GITHUB_ENV
 
       - name: 缓存 Gradle
         uses: actions/cache@v4
@@ -57,14 +62,13 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle.kts', '**/*.gradle', 'gradle/libs.versions.toml') }}
           restore-keys: gradle-
 
-      - name: 缓存 vcpkg 包
+      - name: 缓存 vcpkg 二进制缓存
         uses: actions/cache@v4
         with:
-          path: |
-            ~/vcpkg/packages
-            ~/vcpkg/buildtrees
-          key: vcpkg-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
-          restore-keys: vcpkg-
+          # 此处配置需与 build-apk.yml、build-check.yml 完全一致，三处共享同一份缓存
+          path: ~/vcpkg-binary-cache
+          key: vcpkg-bincache-${{ hashFiles('app/src/main/cpp/vcpkg.json') }}
+          restore-keys: vcpkg-bincache-
 
       - name: 解码 keystore
         env:
