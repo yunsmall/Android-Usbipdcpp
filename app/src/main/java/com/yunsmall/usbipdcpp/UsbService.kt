@@ -16,7 +16,18 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class UsbService : Service() {
@@ -27,45 +38,57 @@ class UsbService : Service() {
         private const val NOTIFICATION_ID = 1
     }
 
+    /**
+     * 对外可见的全部 Service 状态。UI 与通知栏都从这一份渲染，
+     * 不再各自缓存一份靠手动刷新同步
+     */
+    data class UiState(
+        val nativeReady: Boolean = false,
+        val serverRunning: Boolean = false,
+        val port: Int = 3240,
+        // deviceName -> busid，UI 展示 busid 用
+        val boundDevices: Map<String, String> = emptyMap()
+    )
+
+    /** 一次性事件：SharedFlow 无重放，UI 不在时事件自然丢弃（正合预期） */
+    sealed interface Event {
+        /** 设备被拔出；wasBound 表示拔出前处于绑定状态，UI 据此决定是否提示 */
+        data class DeviceDetached(val device: UsbDevice, val wasBound: Boolean) : Event
+    }
+
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
+    val events: SharedFlow<Event> = _events.asSharedFlow()
+
+    // 服务内部协程：native 初始化、状态变化刷新通知、拔出清理。
+    // 状态写入本身线程安全（MutableStateFlow.update 是 CAS 循环），
+    // 用 Main.immediate 只是让通知更新落在主线程
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     private val binder = UsbBinder()
 
-    // 保存活跃的USB连接
+    // 保存活跃的USB连接。只在 nativeDispatcher 线程读写（与 native 调用同一临界区），
+    // 对外的绑定状态经 _state 发布，所以这里用普通 map 即可
     private data class DeviceInfo(
         val connection: UsbDeviceConnection,
         val fd: Int,
         val busid: String
     )
-    // 写操作都在 nativeDispatcher 单线程，但 UI 线程会读（boundDeviceNames/getBusid），
-    // 用 ConcurrentHashMap：弱一致迭代不会抛 ConcurrentModificationException
-    private val activeDevices = java.util.concurrent.ConcurrentHashMap<String, DeviceInfo>()
+    private val activeDevices = mutableMapOf<String, DeviceInfo>()
 
-    // 写在 nativeDispatcher 线程、读在 UI 线程，需要 @Volatile 保证可见性
-    @Volatile
-    var serverRunning = false
-        private set
-    @Volatile
-    var port = 3240
-        private set
-
-    val boundDeviceNames: Set<String>
-        // 返回拷贝而非 keys 视图：UI 线程迭代时 native 线程可能正在改 map，
-        // 视图迭代会抛 ConcurrentModificationException
-        get() = activeDevices.keys.toSet()
-
-    fun getBusid(deviceName: String): String? = activeDevices[deviceName]?.busid
+    // onStartCommand 之前 notify 同 ID 通知会先于 startForeground 生效，语义混乱，
+    // 这里等前台通知建立后再由状态驱动更新
+    private var notificationStarted = false
 
     inner class UsbBinder : Binder() {
         fun getService(): UsbService = this@UsbService
     }
 
-    // native 层初始化状态：init 失败（库加载失败等）时后续绑定/启服全部
-    // 不可用，暴露给 UI 层检查
-    @Volatile
-    var nativeReady = false
-        private set
-
     // 服务自注册的拔出监听：Activity 销毁（用户退出 UI）后服务仍在前台运行，
-    // 拔出事件不能依赖 UI 层的接收器，否则 activeDevices 残留、连接无法清理
+    // 拔出清理不能依赖 UI 层，否则 activeDevices 残留、连接无法清理。
+    // 这是拔出清理的唯一路径，UI 只消费 Event 弹提示
     private val deviceDetachedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED) return
@@ -76,21 +99,30 @@ class UsbService : Service() {
                 intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
             }
             device?.let { usbDevice ->
-                // onReceive 在主线程，handleDeviceDetached 是挂起函数且要切
-                // nativeDispatcher，直接 runBlocking 会卡主线程，用后台线程执行
-                Thread {
-                    runBlocking { handleDeviceDetached(usbDevice.deviceName) }
-                }.start()
+                // onReceive 在主线程，设备清理要切到 native 线程；起协程而非
+                // runBlocking，避免阻塞主线程
+                serviceScope.launch { handleDeviceDetached(usbDevice) }
             }
+        }
+    }
+
+    init {
+        // 状态变化的唯一出口：通知栏文案跟着 _state 走，不用在每个变更点手写刷新
+        serviceScope.launch {
+            state.collect { if (notificationStarted) updateNotification() }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        nativeReady = UsbIpNative.init()
-        if (!nativeReady) {
-            Log.e(TAG, "Native initialization failed, USB/IP features unavailable")
+        // native 初始化含库加载与 libusb 初始化，放 native 线程执行不阻塞主线程
+        serviceScope.launch {
+            val ready = UsbIpNative.init()
+            _state.update { it.copy(nativeReady = ready) }
+            if (!ready) {
+                Log.e(TAG, "Native initialization failed, USB/IP features unavailable")
+            }
         }
 
         val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -102,6 +134,7 @@ class UsbService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        notificationStarted = true
         startForeground(NOTIFICATION_ID, createNotification())
         return START_STICKY
     }
@@ -115,6 +148,7 @@ class UsbService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "Receiver already unregistered", e)
         }
+        serviceScope.cancel()
         // native 清理含 join 线程等耗时操作，在主线程 runBlocking 会卡 ANR，
         // 放到后台线程执行（进程退出时系统回收，不保证执行完）。
         // closeAllDevices 也放在 native 线程内：销毁期间 MainActivity 的协程
@@ -123,26 +157,20 @@ class UsbService : Service() {
         // GC，不存在 C++ 那样的 use-after-free
         Thread {
             UsbIpNative.runOnNativeThread {
-                if (UsbIpNative.isServerRunning()) {
-                    UsbIpNative.stopServer()
-                }
-                // 这里调的是 native 的 stopServer（external），不会清理
-                // Kotlin 层连接，closeAllDevices 只执行一次，无重复
-                closeAllDevices()
+                // release 内部会先停服务器并释放 libusb，不用再单独判断服务是否运行
                 UsbIpNative.release()
+                closeAllDevices()
             }
         }.start()
     }
 
     suspend fun startServer(port: Int): Boolean {
-        if (serverRunning) return true
+        if (state.value.serverRunning) return true
 
         return withContext(UsbIpNative.nativeDispatcher) {
             val success = UsbIpNative.startServer(port)
             if (success) {
-                this@UsbService.port = port
-                serverRunning = true
-                updateNotification()
+                _state.update { it.copy(serverRunning = true, port = port) }
             }
             success
         }
@@ -151,17 +179,17 @@ class UsbService : Service() {
     suspend fun stopServer() {
         withContext(UsbIpNative.nativeDispatcher) {
             UsbIpNative.stopServer()
-            serverRunning = false
             // 关设备也在 native 线程内，避免 UI 线程迭代/清空 map 与并发绑定冲突
             closeAllDevices()
+            _state.update { it.copy(serverRunning = false, boundDevices = emptyMap()) }
         }
-        updateNotification()
     }
 
     suspend fun bindDevice(usbManager: UsbManager, device: UsbDevice): DeviceBindResult {
+        // 整个方法体在 native 线程：设备表读写必须与 native 调用同临界区。
         // 块内全是同步 JNI 调用、无挂起点，协程取消只会在 withContext 返回后
         // 抛出，不会中断块内的资源清理（connection 的开关都在块内完成）
-        val result = withContext(UsbIpNative.nativeDispatcher) {
+        return withContext(UsbIpNative.nativeDispatcher) {
             // 防御：同一设备已绑定则拒绝，否则覆盖 map 条目导致旧连接泄漏
             if (activeDevices.containsKey(device.deviceName)) {
                 return@withContext DeviceBindResult.Failure.DeviceInUse
@@ -178,78 +206,74 @@ class UsbService : Service() {
                 return@withContext DeviceBindResult.Failure.DeviceOpenFailed
             }
 
-            val outBusid = arrayOfNulls<String>(1)
-            val nativeResult = UsbIpNative.bindUsbDeviceNative(fd, device.vendorId, device.productId, outBusid)
-
-            when (nativeResult) {
-                UsbIpNative.ErrorCode.SUCCESS -> {
-                    // JNI 层 SUCCESS 时必已写 busid，防御性检查防止未来实现
-                    // 改动导致 NPE
-                    val busid = outBusid[0] ?: run {
-                        connection.close()
-                        return@withContext DeviceBindResult.Failure.UnknownError
+            when (val result = UsbIpNative.bindUsbDevice(fd, device.vendorId, device.productId)) {
+                is DeviceBindResult.Success -> {
+                    activeDevices[device.deviceName] = DeviceInfo(connection, fd, result.busid)
+                    _state.update {
+                        it.copy(boundDevices = it.boundDevices + (device.deviceName to result.busid))
                     }
-                    activeDevices[device.deviceName] = DeviceInfo(connection, fd, busid)
-                    Log.i(TAG, "Device bound: ${device.deviceName} -> $busid")
-                    DeviceBindResult.Success(busid)
+                    Log.i(TAG, "Device bound: ${device.deviceName} -> ${result.busid}")
+                    result
                 }
-                else -> {
+                is DeviceBindResult.Failure -> {
                     connection.close()
-                    mapErrorCodeToResult(nativeResult)
+                    result
                 }
             }
         }
-        return result
     }
 
     suspend fun unbindDevice(deviceName: String): DeviceUnbindResult {
-        val result = withContext(UsbIpNative.nativeDispatcher) {
+        return withContext(UsbIpNative.nativeDispatcher) {
             val info = activeDevices[deviceName]
-            if (info == null) {
-                return@withContext DeviceUnbindResult.Failure.DeviceNotFound
+                ?: return@withContext DeviceUnbindResult.Failure.DeviceNotFound
+
+            // native 侧已无此设备（如已被拔出清理）时 Kotlin 侧连接和状态同样要清，
+            // 否则连接泄漏、UI 一直显示已绑定
+            fun cleanup() {
+                activeDevices.remove(deviceName)?.connection?.close()
+                _state.update { it.copy(boundDevices = it.boundDevices - deviceName) }
             }
 
-            val nativeResult = UsbIpNative.unbindUsbDeviceNative(info.fd)
-
-            when (nativeResult) {
-                UsbIpNative.ErrorCode.SUCCESS -> {
-                    activeDevices.remove(deviceName)?.connection?.close()
+            when (val result = UsbIpNative.unbindUsbDevice(info.fd)) {
+                DeviceUnbindResult.Success -> {
+                    cleanup()
                     Log.i(TAG, "Device unbound: $deviceName")
-                    DeviceUnbindResult.Success
+                    result
                 }
-                UsbIpNative.ErrorCode.DEVICE_NOT_FOUND -> {
-                    activeDevices.remove(deviceName)?.connection?.close()
+                DeviceUnbindResult.Failure.DeviceNotFound -> {
+                    cleanup()
                     Log.w(TAG, "Device already gone in native: $deviceName")
-                    DeviceUnbindResult.Failure.DeviceNotFound
+                    result
                 }
-                UsbIpNative.ErrorCode.DEVICE_IN_USE -> {
-                    DeviceUnbindResult.Failure.DeviceInUse
-                }
+                DeviceUnbindResult.Failure.DeviceInUse -> result
                 else -> {
-                    Log.e(TAG, "Unknown unbind error: $nativeResult for $deviceName")
-                    DeviceUnbindResult.Failure.UnknownError
+                    Log.e(TAG, "Unknown unbind error: $result for $deviceName")
+                    result
                 }
             }
         }
-        return result
     }
 
-    suspend fun handleDeviceDetached(deviceName: String): Boolean {
-        // 整个方法体在 nativeDispatcher 内执行：map 的读写都必须与
-        // bindDevice/unbindDevice 同线程，否则 UI 线程的 remove 与
-        // native 线程的写入并发修改 HashMap
-        return withContext(UsbIpNative.nativeDispatcher) {
-            val info = activeDevices[deviceName] ?: return@withContext false
-            // 先通知 native 清理再关 Kotlin 连接：notify_device_removed 同步
-            // 移除设备（available）或触发会话停止（using）；物理拔出后 fd 已
-            // 失效，且 native 的 libusb handle 持有独立 fd，close 互不影响
-            UsbIpNative.notifyDeviceRemovedNative(info.busid)
-            activeDevices.remove(deviceName)?.connection?.close()
-            Log.i(TAG, "Device detached: $deviceName")
+    /**
+     * 设备拔出清理：整块在 native 线程执行，先通知 native 清理再关 Kotlin 连接
+     * （notify_device_removed 同步移除设备或触发会话停止；物理拔出后 fd 已失效，
+     * 且 native 的 libusb handle 持有独立 fd，close 互不影响）。
+     * 只由 Service 自己的接收器调用，UI 不再参与清理
+     */
+    private suspend fun handleDeviceDetached(usbDevice: UsbDevice) {
+        val wasBound = withContext(UsbIpNative.nativeDispatcher) {
+            val info = activeDevices.remove(usbDevice.deviceName) ?: return@withContext false
+            UsbIpNative.notifyDeviceRemoved(info.busid)
+            info.connection.close()
+            _state.update { it.copy(boundDevices = it.boundDevices - usbDevice.deviceName) }
+            Log.i(TAG, "Device detached: ${usbDevice.deviceName}")
             true
         }
+        _events.tryEmit(Event.DeviceDetached(usbDevice, wasBound))
     }
 
+    // 只在 nativeDispatcher 线程调用
     private fun closeAllDevices() {
         activeDevices.values.forEach { it.connection.close() }
         activeDevices.clear()
@@ -269,18 +293,6 @@ class UsbService : Service() {
         }
     }
 
-    private fun mapErrorCodeToResult(errorCode: Int): DeviceBindResult.Failure {
-        return when (errorCode) {
-            UsbIpNative.ErrorCode.DEVICE_NOT_FOUND -> DeviceBindResult.Failure.DeviceNotFound
-            UsbIpNative.ErrorCode.DEVICE_IN_USE -> DeviceBindResult.Failure.DeviceInUse
-            UsbIpNative.ErrorCode.DEVICE_OPEN_FAILED -> DeviceBindResult.Failure.DeviceOpenFailed
-            UsbIpNative.ErrorCode.GET_DESCRIPTOR_FAILED -> DeviceBindResult.Failure.GetDescriptorFailed
-            UsbIpNative.ErrorCode.GET_CONFIG_FAILED -> DeviceBindResult.Failure.GetConfigFailed
-            UsbIpNative.ErrorCode.CLAIM_INTERFACE_FAILED -> DeviceBindResult.Failure.ClaimInterfaceFailed
-            else -> DeviceBindResult.Failure.UnknownError
-        }
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -297,7 +309,7 @@ class UsbService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             // 动态显示运行状态：服务器未运行时提示已停止，避免误导
-            .setContentText(getString(if (serverRunning) R.string.server_running else R.string.server_stopped))
+            .setContentText(getString(if (state.value.serverRunning) R.string.server_running else R.string.server_stopped))
             .setSmallIcon(android.R.drawable.ic_menu_manage)
             .setOngoing(true)
             .build()

@@ -61,7 +61,7 @@ JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(JNIEnv* env, jobject thiz) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInitImpl(JNIEnv* env, jobject thiz) {
     __android_log_print(ANDROID_LOG_INFO, LOG_TAG, "Initializing native layer");
 
     // compare_exchange 原子抢锁：并发调用时只有一个线程执行初始化。
@@ -87,7 +87,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(JNIEnv* env, jobject thiz) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallback(JNIEnv* env, jobject thiz, jobject callback) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallbackImpl(JNIEnv* env, jobject thiz, jobject callback) {
     if (callback == nullptr) {
         // null 表示清除回调：UI 销毁（应用退后台）时释放全局引用，
         // 否则旧 Activity 会被 JNI 全局引用一直持有导致泄漏
@@ -127,7 +127,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_setLogCallback(JNIEnv* env, jobject thiz
 }
 
 JNIEXPORT jint JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
+Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceImpl(
     JNIEnv* env, jobject thiz, jint fd, jint vendor_id, jint product_id, jobjectArray outBusid) {
 
     spdlog::info("Binding USB device: fd={}, vid=0x{:04x}, pid=0x{:04x}", fd, vendor_id, product_id);
@@ -201,13 +201,13 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_bindUsbDeviceNative(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_startServer(JNIEnv* env, jobject thiz, jint port) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_startServerImpl(JNIEnv* env, jobject thiz, jint port) {
 
     spdlog::info("Starting USB/IP server on port {}", port);
 
     if (!g_initialized) {
         spdlog::error("Native layer not initialized, initializing now...");
-        if (!Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInit(env, thiz)) {
+        if (!Java_com_yunsmall_usbipdcpp_UsbIpNative_nativeInitImpl(env, thiz)) {
             return JNI_FALSE;
         }
     }
@@ -248,7 +248,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_startServer(JNIEnv* env, jobject thiz, j
 }
 
 JNIEXPORT void JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServer(JNIEnv* env, jobject thiz) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServerImpl(JNIEnv* env, jobject thiz) {
 
     spdlog::info("Stopping USB/IP server");
 
@@ -273,13 +273,8 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServer(JNIEnv* env, jobject thiz) {
     }
 }
 
-JNIEXPORT jboolean JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_isServerRunning(JNIEnv* env, jobject thiz) {
-    return g_server_running ? JNI_TRUE : JNI_FALSE;
-}
-
 JNIEXPORT jint JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_unbindUsbDeviceNative(
+Java_com_yunsmall_usbipdcpp_UsbIpNative_unbindUsbDeviceImpl(
     JNIEnv* env, jobject thiz, jint fd) {
 
     spdlog::info("Unbinding USB device with fd={}", fd);
@@ -309,7 +304,7 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_unbindUsbDeviceNative(
 }
 
 JNIEXPORT void JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_notifyDeviceRemovedNative(
+Java_com_yunsmall_usbipdcpp_UsbIpNative_notifyDeviceRemovedImpl(
     JNIEnv* env, jobject thiz, jstring busid) {
 
     const char* busid_cstr = env->GetStringUTFChars(busid, nullptr);
@@ -336,10 +331,10 @@ Java_com_yunsmall_usbipdcpp_UsbIpNative_notifyDeviceRemovedNative(
 }
 
 JNIEXPORT void JNICALL
-Java_com_yunsmall_usbipdcpp_UsbIpNative_release(JNIEnv* env, jobject thiz) {
+Java_com_yunsmall_usbipdcpp_UsbIpNative_releaseImpl(JNIEnv* env, jobject thiz) {
     spdlog::info("Releasing native resources");
 
-    Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServer(env, thiz);
+    Java_com_yunsmall_usbipdcpp_UsbIpNative_stopServerImpl(env, thiz);
 
     if (g_initialized) {
         libusb_exit(nullptr);

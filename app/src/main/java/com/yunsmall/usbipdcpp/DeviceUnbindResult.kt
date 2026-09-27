@@ -19,7 +19,4 @@ sealed class DeviceUnbindResult {
             UnknownError -> context.getString(R.string.error_unknown)
         }
     }
-
-    val isSuccess: Boolean get() = this is Success
-    val isFailure: Boolean get() = this is Failure
 }

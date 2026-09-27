@@ -27,9 +27,4 @@ sealed class DeviceBindResult {
             UnknownError -> context.getString(R.string.error_unknown)
         }
     }
-
-    val isSuccess: Boolean get() = this is Success
-    val isFailure: Boolean get() = this is Failure
-
-    fun getBusidOrNull(): String? = (this as? Success)?.busid
 }

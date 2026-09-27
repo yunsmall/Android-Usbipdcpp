@@ -36,14 +36,9 @@ class UsbPermissionManager(
     // 按 deviceName 存待处理请求：多设备并发请求互不覆盖，回调后立即移除
     private val pendingCallbacks = mutableMapOf<String, (UsbDevice, Boolean) -> Unit>()
     private var onDeviceAttached: (() -> Unit)? = null
-    private var onDeviceDetached: ((UsbDevice) -> Unit)? = null
 
     fun setOnDeviceAttachedListener(listener: (() -> Unit)?) {
         onDeviceAttached = listener
-    }
-
-    fun setOnDeviceDetachedListener(listener: ((UsbDevice) -> Unit)?) {
-        onDeviceDetached = listener
     }
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -88,12 +83,9 @@ class UsbPermissionManager(
                         synchronized(lock) {
                             pendingCallbacks.remove(usbDevice.deviceName)
                         }
-                        // onDeviceDetached 只负责解绑清理，不刷设备列表；
-                        // 下面的 onDeviceAttached 才负责刷新设备列表，
-                        // 两个回调职责不同，不算重复刷新
-                        onDeviceDetached?.invoke(usbDevice)
                     }
-                    // 设备物理拔出，设备列表必须刷新
+                    // 设备物理拔出，设备列表必须刷新（解绑清理由 UsbService 自己的
+                    // 接收器负责，与本管理器无关）
                     onDeviceAttached?.invoke()
                 }
             }

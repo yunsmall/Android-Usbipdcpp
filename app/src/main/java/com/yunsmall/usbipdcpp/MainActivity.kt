@@ -54,8 +54,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.yunsmall.usbipdcpp.ui.theme.UsbipdcppTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 // 文件顶层常量：MainScreen 是顶层函数而非 MainActivity 方法，
 // 常量放 companion（private）会访问不到
@@ -71,27 +71,21 @@ class MainActivity : AppCompatActivity() {
         UsbPermissionManager(this, usbManager)
     }
 
-    private var refreshDevicesCallback: (() -> Unit)? = null
-
-    // 用于通知 Compose Service 状态变化
-    private var onServiceStateChanged: (() -> Unit)? = null
-
-    private var usbService: UsbService? = null
+    // Compose 观察的 Service 引用：ServiceConnection 回调都在主线程，直接写
+    // State 让组合自动重组，不必再手工挂"状态变了"的回调并记住到处置空
+    private val usbServiceState = mutableStateOf<UsbService?>(null)
     private var serviceBound = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as UsbService.UsbBinder
-            usbService = binder.getService()
+            usbServiceState.value = binder.getService()
             serviceBound = true
-            refreshDevicesCallback?.invoke()
-            onServiceStateChanged?.invoke()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            usbService = null
+            usbServiceState.value = null
             serviceBound = false
-            onServiceStateChanged?.invoke()
         }
     }
 
@@ -108,52 +102,17 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             UsbipdcppTheme {
-                // 用 State 观察 Service 变化
-                var serviceState by remember { mutableStateOf(Pair<UsbService?, Boolean>(null, false)) }
-
-                DisposableEffect(Unit) {
-                    onServiceStateChanged = {
-                        serviceState = Pair(usbService, serviceBound)
-                    }
-                    // 立即触发一次以获取当前状态
-                    serviceState = Pair(usbService, serviceBound)
-                    onDispose {
-                        onServiceStateChanged = null
-                    }
-                }
-
                 MainScreen(
                     usbManager = usbManager,
                     permissionManager = permissionManager,
-                    usbService = serviceState.first,
-                    serviceBound = serviceState.second,
-                    onRefreshCallbackReady = { callback -> refreshDevicesCallback = callback }
+                    usbService = usbServiceState.value
                 )
             }
-        }
-
-        handleUsbIntent(intent)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        handleUsbIntent(intent)
-    }
-
-    private fun handleUsbIntent(intent: Intent?) {
-        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            Log.d(TAG, "USB device attached via intent")
-            refreshDevicesCallback?.invoke()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // 释放回调引用：闭包捕获 Compose 状态，不清理会在销毁后滞留。
-        // Compose 的 onDispose 也会置空，这里双保险覆盖"onDestroy 后、
-        // Compose 销毁前"的窗口
-        refreshDevicesCallback = null
-        onServiceStateChanged = null
         permissionManager.unregisterReceiver()
         if (serviceBound) {
             unbindService(serviceConnection)
@@ -184,17 +143,13 @@ fun setLanguage(language: String) {
 fun MainScreen(
     usbManager: UsbManager,
     permissionManager: UsbPermissionManager,
-    usbService: UsbService?,
-    serviceBound: Boolean,
-    onRefreshCallbackReady: (() -> Unit) -> Unit = {}
+    usbService: UsbService?
 ) {
-    var serverRunning by remember { mutableStateOf(false) }
     var isStarting by remember { mutableStateOf(false) }
     var isStopping by remember { mutableStateOf(false) }
     var portText by remember { mutableStateOf("3240") }
     var logMessages by remember { mutableStateOf(listOf<String>()) }
     var devices by remember { mutableStateOf(mapOf<String, UsbDevice>()) }
-    var boundDevices by remember { mutableStateOf(setOf<String>()) }
     var showFullLog by remember { mutableStateOf(false) }
     var showLanguageMenu by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
@@ -203,6 +158,18 @@ fun MainScreen(
     // 权限对话框期间系统回收 Activity（如"不保留活动"）后重建时，
     // remember 状态会丢，rememberSaveable 保证授权回调仍能找到待绑定设备
     var pendingBindDeviceName by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Service 的状态是唯一真相源，UI 只观察：不再自己存一份 serverRunning/
+    // boundDevices 并在每个变更点手动刷新。Service 未绑定时用空状态占位
+    val emptyServiceState = remember { MutableStateFlow(UsbService.UiState()) }
+    val serviceState by (usbService?.state ?: emptyServiceState).collectAsState()
+    val serverRunning = serviceState.serverRunning
+    val boundDevices = serviceState.boundDevices.keys
+
+    // 启动成功后回填实际使用的端口
+    LaunchedEffect(serviceState.port) {
+        portText = serviceState.port.toString()
+    }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -218,7 +185,7 @@ fun MainScreen(
             return
         }
         // native 初始化失败时绑定无意义，明确提示而非等 native 返回模糊错误
-        if (!service.nativeReady) {
+        if (!serviceState.nativeReady) {
             Toast.makeText(context, context.getString(R.string.native_init_failed), Toast.LENGTH_SHORT).show()
             return
         }
@@ -230,9 +197,7 @@ fun MainScreen(
                     busyDevices = busyDevices + device.deviceName
                     try {
                         val result = service.bindDevice(usbManager, device)
-                        // 用局部 service 刷新：绑定期间 Activity 重建可能更换
-                        // usbService 引用，用外部变量会读到不一致的状态
-                        boundDevices = service.boundDeviceNames
+                        // 绑定状态由 Service 的 StateFlow 自动传播到 UI，不用手动同步
                         when (result) {
                             is DeviceBindResult.Success -> {
                                 Toast.makeText(context, context.getString(R.string.bind_success, deviceName), Toast.LENGTH_SHORT).show()
@@ -277,14 +242,6 @@ fun MainScreen(
     fun refreshDevices() {
         devices = permissionManager.getDeviceList()
         addLog("Found ${devices.size} USB device(s)")
-    }
-
-    fun refreshState() {
-        usbService?.let { service ->
-            serverRunning = service.serverRunning
-            boundDevices = service.boundDeviceNames
-            portText = service.port.toString()
-        }
     }
 
     // 获取设备IP地址
@@ -343,35 +300,32 @@ fun MainScreen(
         }
     }
 
-    // Service 状态变化时刷新
-    LaunchedEffect(serviceBound, usbService) {
-        onRefreshCallbackReady { refreshDevices() }
-        refreshDevices()
-        refreshState()
-    }
+    // 首次组合刷新一次设备列表；之后由插拔广播与手动刷新按钮驱动
+    LaunchedEffect(Unit) { refreshDevices() }
 
     // 监听USB设备插入/拔出（通过BroadcastReceiver）
-    // 用 rememberUpdatedState 确保 lambda 始终读取最新值，不会被 DisposableEffect 捕获旧引用
-    val currentService by rememberUpdatedState(usbService)
     DisposableEffect(permissionManager) {
         permissionManager.setOnDeviceAttachedListener {
             refreshDevices()
         }
-        permissionManager.setOnDeviceDetachedListener { device ->
-            scope.launch {
-                val service = currentService
-                val wasBound = service?.handleDeviceDetached(device.deviceName) ?: false
-                boundDevices = service?.boundDeviceNames ?: emptySet()
-                if (wasBound) {
-                    val deviceName = device.productName?.takeIf { it.isNotEmpty() }
-                        ?: context.getString(R.string.unknown_device)
-                    Toast.makeText(context, context.getString(R.string.device_detached, deviceName), Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
         onDispose {
             permissionManager.setOnDeviceAttachedListener(null)
-            permissionManager.setOnDeviceDetachedListener(null)
+        }
+    }
+
+    // 拔出提示：设备清理由 Service 统一处理（它的接收器在 Activity 销毁后仍有效），
+    // UI 只消费事件弹提示，绑定状态经 serviceState 自动更新
+    LaunchedEffect(usbService) {
+        usbService?.events?.collect { event ->
+            when (event) {
+                is UsbService.Event.DeviceDetached -> {
+                    if (event.wasBound) {
+                        val deviceName = event.device.productName?.takeIf { it.isNotEmpty() }
+                            ?: context.getString(R.string.unknown_device)
+                        Toast.makeText(context, context.getString(R.string.device_detached, deviceName), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
 
@@ -436,17 +390,15 @@ fun MainScreen(
                         return@ServerControlPanel
                     }
                     // native 初始化失败时无法启动服务器，明确提示
-                    if (!service.nativeReady) {
+                    if (!serviceState.nativeReady) {
                         Toast.makeText(context, context.getString(R.string.native_init_failed), Toast.LENGTH_SHORT).show()
                         return@ServerControlPanel
                     }
                     isStarting = true
                     scope.launch {
-                        val success = service.startServer(port)
+                        // 启动结果由 Service 的 StateFlow 反映，成功后 UI 自动切到运行态
+                        service.startServer(port)
                         isStarting = false
-                        if (success) {
-                            serverRunning = true
-                        }
                     }
                 },
                 onStop = {
@@ -457,10 +409,9 @@ fun MainScreen(
                     }
                     isStopping = true
                     scope.launch {
+                        // 停止后 serverRunning/绑定列表由 Service 的 StateFlow 清空
                         service.stopServer()
                         isStopping = false
-                        serverRunning = false
-                        boundDevices = emptySet()
                     }
                 }
             )
@@ -477,7 +428,7 @@ fun MainScreen(
                 boundDevices = boundDevices,
                 busyDevices = busyDevices,
                 serverRunning = serverRunning,
-                getBusid = { usbService?.getBusid(it) },
+                getBusid = { serviceState.boundDevices[it] },
                 onBindDevice = { device ->
                     if (!serverRunning) {
                         Toast.makeText(context, context.getString(R.string.please_start_server), Toast.LENGTH_SHORT).show()
@@ -514,8 +465,7 @@ fun MainScreen(
                         busyDevices = busyDevices + device.deviceName
                         try {
                             val result = service.unbindDevice(device.deviceName)
-                            // 无论成功失败都刷新，确保 UI 与 Service 状态一致
-                            boundDevices = service.boundDeviceNames
+                            // 解绑状态由 Service 的 StateFlow 自动传播到 UI
                             when (result) {
                                 is DeviceUnbindResult.Success -> {
                                     Toast.makeText(context, context.getString(R.string.unbind_success, deviceName), Toast.LENGTH_SHORT).show()
