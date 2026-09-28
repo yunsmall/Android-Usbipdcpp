@@ -13,26 +13,47 @@ namespace {
     std::mutex g_mutex;
 }
 
-void init(JNIEnv* env, jobject callback_obj, jmethodID log_method) {
+bool init(JNIEnv* env, jobject callback_obj, jmethodID log_method) {
     // MainActivity 的 DisposableEffect 每次重建都会调用 setLogCallback，
     // 不释放旧引用会导致全局引用永久泄漏
-    std::lock_guard lock(g_mutex);
-    if (g_callback_obj) {
-        env->DeleteGlobalRef(g_callback_obj);
+    // GetJavaVM 只读 env 内部的 vm 指针（不碰引用表、不阻塞），放锁外执行；
+    // 写 g_jvm 仍在锁内，避免与 cleanup 的置空竞争
+    JavaVM* jvm = nullptr;
+    if (env->GetJavaVM(&jvm) != JNI_OK || jvm == nullptr) {
+        // 规范上允许失败（实现上取 env 缓存的 vm 指针，基本不会）：失败时全局
+        // 状态保持不变（旧回调继续工作），只把本次的新引用释放掉
+        env->DeleteGlobalRef(callback_obj);
+        return false;
     }
-    env->GetJavaVM(&g_jvm);
-    g_callback_obj = callback_obj;
-    g_log_method = log_method;
+    jobject old = nullptr;
+    {
+        std::lock_guard lock(g_mutex);
+        old = g_callback_obj;
+        g_jvm = jvm;
+        g_callback_obj = callback_obj;
+        g_log_method = log_method;
+    }
+    // DeleteGlobalRef 触碰 JVM 引用表，放锁外执行：与本文件"JNI 调用不进锁"
+    // 的约定一致，也避免持锁等待 JVM 内部锁
+    if (old) {
+        env->DeleteGlobalRef(old);
+    }
+    return true;
 }
 
 void cleanup(JNIEnv* env) {
-    std::lock_guard lock(g_mutex);
-    if (g_callback_obj) {
-        env->DeleteGlobalRef(g_callback_obj);
+    // 与 init 同纪律：锁内只摘引用，DeleteGlobalRef 放锁外执行
+    jobject old = nullptr;
+    {
+        std::lock_guard lock(g_mutex);
+        old = g_callback_obj;
         g_callback_obj = nullptr;
+        g_jvm = nullptr;
+        g_log_method = nullptr;
     }
-    g_jvm = nullptr;
-    g_log_method = nullptr;
+    if (old) {
+        env->DeleteGlobalRef(old);
+    }
 }
 
 void log_callback(spdlog::level::level_enum level, const std::string& message) {
@@ -54,6 +75,9 @@ void log_callback(spdlog::level::level_enum level, const std::string& message) {
         // 不会回调用户逻辑；需要 GetEnv 后才能在锁内派生本地引用
         int get_env_result = jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
         if (get_env_result == JNI_EDETACHED) {
+            // 用完即 detach 而不缓存 attach 状态：日志线程由库创建，线程退出时
+            // 我们没有补救机会，保持 attached 会违反 JNI"退出前必须 detach"的要求；
+            // attach/detach 是微秒级操作，不做优化
             if (jvm->AttachCurrentThread(&env, nullptr) == JNI_OK) {
                 need_detach = true;
             } else {
@@ -67,8 +91,12 @@ void log_callback(spdlog::level::level_enum level, const std::string& message) {
         method = g_log_method;
     }
     if (!env || !callback || !method) {
-        // NewLocalRef 失败（OOM）时已 attach 的线程必须 detach，
-        // 否则线程永久附加在 JVM 上
+        // NewLocalRef 失败（OOM）会挂起 OutOfMemoryError，必须清掉：异常残留在
+        // 已 attach 的线程上（如发起调用的 UI 线程）会破坏其后续 JNI 调用。
+        // 已 attach 的线程必须 detach，否则线程永久附加在 JVM 上
+        if (env) {
+            env->ExceptionClear();
+        }
         if (need_detach) {
             jvm->DetachCurrentThread();
         }

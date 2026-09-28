@@ -28,6 +28,8 @@ set(CMAKE_CXX_STANDARD 23)
 
 # find_package(usbipdcpp CONFIG REQUIRED COMPONENTS libusb)
 
+# libusb 版本要求 >= 1.0.23：JNI 层用 libusb_wrap_sys_device 取 busid 后 close
+# 临时 handle，依赖该版本起的 fd_keep 语义才不会连带关掉 UsbDeviceConnection 的 fd
 set(USBIPDCPP_BUILD_LIBUSB_COMPONENTS ON)
 set(USBIPDCPP_BUILD_SHARED_LIBS OFF)
 # 本应用只做 USB 设备转发，不使用虚拟设备组件（那是给 PC 端模拟设备用的），

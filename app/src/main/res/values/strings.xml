@@ -37,6 +37,8 @@
 
     <!-- Toast Messages -->
     <string name="please_start_server">Please start server first</string>
+    <string name="start_failed">Failed to start server</string>
+    <string name="invalid_port">Port must be between 1 and 65535</string>
     <string name="permission_denied">Permission denied</string>
     <string name="device_unavailable">Device unavailable (may be in use by system)</string>
     <string name="bind_success">Device bound: %1$s</string>
@@ -53,6 +55,7 @@
     <string name="error_get_config_failed">Failed to get configuration descriptor</string>
     <string name="error_claim_interface_failed">Failed to claim interface</string>
     <string name="error_hub_filtered">USB hubs can\'t be exported</string>
+    <string name="error_server_not_running">Server not started</string>
     <string name="error_unknown">Unknown error</string>
     <string name="service_not_ready">Service not ready</string>
     <string name="log_copied">Log copied</string>

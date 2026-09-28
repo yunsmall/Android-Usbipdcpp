@@ -113,6 +113,11 @@ class UsbPermissionManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering receiver", e)
         }
+        // 注销后广播不会再到达，待处理回调不再有兑现路径：清掉，回调闭包持有
+        // Activity 引用，留着只是挂在 map 里
+        synchronized(lock) {
+            pendingCallbacks.clear()
+        }
     }
 
     fun getDeviceList(): Map<String, UsbDevice> {
@@ -156,6 +161,8 @@ class UsbPermissionManager(
             }
             pendingCallbacks[device.deviceName] = callback
         }
+        // 不包 try-catch 清理 pendingCallbacks：此调用抛异常只会来自系统服务异常
+        // （rethrowFromSystemServer 以崩溃终止进程），残留状态没有存活的载体
         usbManager.requestPermission(device, permissionIntent)
         return true
     }

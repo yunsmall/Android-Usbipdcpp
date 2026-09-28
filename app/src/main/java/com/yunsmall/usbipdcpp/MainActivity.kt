@@ -67,6 +67,9 @@ class MainActivity : AppCompatActivity() {
         getSystemService(USB_SERVICE) as UsbManager
     }
 
+    // 用 lazy：onDestroy 里即使从未 registerReceiver 过也会调 unregisterReceiver，
+    // 此时会触发这里的初始化，但构造本身无副作用（PendingIntent 也是 lazy），
+    // 而未注册时 unregisterReceiver 抛的异常在其内部已被捕获
     private val permissionManager: UsbPermissionManager by lazy {
         UsbPermissionManager(this, usbManager)
     }
@@ -112,8 +115,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // super 在前无碍：Activity.onDestroy 不依赖 receiver 状态，下面的清理
+        // 只访问 context
         super.onDestroy()
         permissionManager.unregisterReceiver()
+        // serviceBound 只在 onServiceConnected 里置 true：bindService 被系统拒绝
+        // 或回调还没到时绑定并不存在，此时调 unbindService 会抛
+        // IllegalArgumentException。回调未到就销毁的场景不会有 Service 泄漏——
+        // Activity context 的绑定跟随 ActivityRecord 生命周期由系统自动清理。
+        // usbServiceState 不用清：它与本 Activity 同生命周期，整条引用链一起回收
         if (serviceBound) {
             unbindService(serviceConnection)
             serviceBound = false
@@ -128,6 +138,15 @@ fun isCameraDevice(device: UsbDevice): Boolean {
     }
     return false
 }
+
+// 日志区只保留最近若干条：debug 级日志量大且服务长期运行，不设上限的话
+// 每次追加的列表复制和展示时的整段拼接会越来越重
+private const val MAX_LOG_LINES = 500
+
+// 用 DateTimeFormatter 而非 SimpleDateFormat：后者非线程安全，虽然 addLog 目前
+// 只在主线程调用（native 回调经 mainHandler.post、手动刷新在主线程），但不必给
+// 调用方留这个隐性前提；每行日志一次格式化的热路径上同样复用实例
+private val logTimeFormat = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
 
 fun setLanguage(language: String) {
     val localeList = if (language == "system") {
@@ -147,7 +166,10 @@ fun MainScreen(
 ) {
     var isStarting by remember { mutableStateOf(false) }
     var isStopping by remember { mutableStateOf(false) }
-    var portText by remember { mutableStateOf("3240") }
+    // 用 rememberSaveable：旋转不该丢掉用户刚输入的端口
+    var portText by rememberSaveable { mutableStateOf("3240") }
+    // 日志不用 rememberSaveable：旋转丢日志无害（native 日志仍在持续产生），
+    // 把最多 500 条字符串序列化进 Bundle 是纯开销
     var logMessages by remember { mutableStateOf(listOf<String>()) }
     var devices by remember { mutableStateOf(mapOf<String, UsbDevice>()) }
     var showFullLog by remember { mutableStateOf(false) }
@@ -156,26 +178,33 @@ fun MainScreen(
     var busyDevices by remember { mutableStateOf(setOf<String>()) }
     // 存设备名而非 UsbDevice 对象（非 Parcelable 无法存 SavedState）：
     // 权限对话框期间系统回收 Activity（如"不保留活动"）后重建时，
-    // remember 状态会丢，rememberSaveable 保证授权回调仍能找到待绑定设备
+    // remember 状态会丢，rememberSaveable 保证授权回调仍能找到待绑定设备。
+    // 不会因"回调不来"卡死：权限结果由系统 Activity Result 框架投递（跨重建、
+    // 跨进程恢复都会重新送达），launch 抛异常的路径下面已复位
     var pendingBindDeviceName by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Service 的状态是唯一真相源，UI 只观察：不再自己存一份 serverRunning/
     // boundDevices 并在每个变更点手动刷新。Service 未绑定时用空状态占位
     val emptyServiceState = remember { MutableStateFlow(UsbService.UiState()) }
+    // collectAsState 返回的 State 对象跨重组稳定，委托读取每次都是当前值；
+    // 且 rememberLauncherForActivityResult 的回调经 rememberUpdatedState 转发，
+    // 调用的永远是最新组合的 performBind——两条路都读不到过期的 nativeReady
     val serviceState by (usbService?.state ?: emptyServiceState).collectAsState()
     val serverRunning = serviceState.serverRunning
     val boundDevices = serviceState.boundDevices.keys
 
-    // 启动成功后回填实际使用的端口
-    LaunchedEffect(serviceState.port) {
-        portText = serviceState.port.toString()
+    // 启动成功后回填实际使用的端口；只在运行中回填，否则旋转重建时会把用户
+    // 已经输入但还没提交的端口覆盖回默认值（rememberSaveable 就白搭了）
+    LaunchedEffect(serviceState.port, serverRunning) {
+        if (serverRunning) {
+            portText = serviceState.port.toString()
+        }
     }
 
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    // performBind 会被 rememberLauncherForActivityResult 的回调长期持有（首次组合
-    // 的实例），必须经 rememberUpdatedState 读最新 usbService，否则授权后拿到
-    // 的是服务绑定前的 null 快照，绑定必然失败
+    // 授权回调路径横跨权限对话框与 Activity 重建，经 rememberUpdatedState 读最新
+    // usbService：直接读快照有拿到服务绑定前 null 的风险，绑定必然失败
     val currentUsbService by rememberUpdatedState(usbService)
 
     // 执行设备绑定（USB 权限 + native 绑定）
@@ -226,8 +255,12 @@ fun MainScreen(
     ) { granted ->
         val deviceName = pendingBindDeviceName ?: return@rememberLauncherForActivityResult
         pendingBindDeviceName = null
-        // Activity 重建后从设备列表重新查找设备对象
-        val device = usbManager.deviceList[deviceName] ?: return@rememberLauncherForActivityResult
+        // Activity 重建后从设备列表重新查找设备对象；授权期间设备被拔掉时给个提示，
+        // 否则用户点完"允许"看起来毫无反应
+        val device = usbManager.deviceList[deviceName] ?: run {
+            Toast.makeText(context, context.getString(R.string.device_unavailable), Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
         if (granted) {
             performBind(device)
         } else {
@@ -236,7 +269,7 @@ fun MainScreen(
     }
 
     fun addLog(message: String) {
-        logMessages = logMessages + "[${java.text.SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(java.util.Date())}] $message"
+        logMessages = (logMessages + "[${java.time.LocalTime.now().format(logTimeFormat)}] $message").takeLast(MAX_LOG_LINES)
     }
 
     fun refreshDevices() {
@@ -278,6 +311,9 @@ fun MainScreen(
         if (serverRunning) {
             // 网络接口枚举可能耗时（多虚拟网卡时），放 IO 线程避免卡主线程
             ipAddress.value = withContext(Dispatchers.IO) { getDeviceIpAddress() }
+        } else {
+            // 停止后清掉：旧地址在下次启动前已无意义，留着是过期状态
+            ipAddress.value = null
         }
     }
 
@@ -288,6 +324,8 @@ fun MainScreen(
         val mainHandler = Handler(Looper.getMainLooper())
         val callback = object : LogCallback {
             override fun onLog(level: Int, message: String) {
+                // onDispose 后队列里可能残留少量已 post 的任务：它们只写已销毁
+                // 组合的状态（无观察者、不触发重组），无需追踪撤销
                 mainHandler.post { addLog(message.trim()) }
             }
         }
@@ -383,7 +421,13 @@ fun MainScreen(
                 portText = portText,
                 onPortChange = { portText = it },
                 onStart = {
-                    val port = portText.toIntOrNull() ?: 3240
+                    // 端口越界（如 65536）会在 native 侧按 unsigned short 回绕成别的
+                    // 端口，UI 显示与实际监听不一致，这里先拦下
+                    val port = portText.toIntOrNull()?.takeIf { it in 1..65535 }
+                    if (port == null) {
+                        Toast.makeText(context, context.getString(R.string.invalid_port), Toast.LENGTH_SHORT).show()
+                        return@ServerControlPanel
+                    }
                     val service = usbService
                     if (service == null) {
                         Toast.makeText(context, context.getString(R.string.service_not_ready), Toast.LENGTH_SHORT).show()
@@ -396,9 +440,13 @@ fun MainScreen(
                     }
                     isStarting = true
                     scope.launch {
-                        // 启动结果由 Service 的 StateFlow 反映，成功后 UI 自动切到运行态
-                        service.startServer(port)
+                        // 启动结果由 Service 的 StateFlow 反映，成功后 UI 自动切到运行态；
+                        // 失败（如端口被占用）状态不变，必须显式提示，否则用户只看到按钮弹回
+                        val started = service.startServer(port)
                         isStarting = false
+                        if (!started) {
+                            Toast.makeText(context, context.getString(R.string.start_failed), Toast.LENGTH_SHORT).show()
+                        }
                     }
                 },
                 onStop = {
@@ -448,7 +496,14 @@ fun MainScreen(
                             return@DeviceListSection
                         }
                         pendingBindDeviceName = device.deviceName
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        try {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        } catch (e: Exception) {
+                            // launch 抛异常不会有任何回调，不复位会让该设备一直
+                            // 卡在"已有待处理请求"（rememberSaveable 跨重建保留）
+                            pendingBindDeviceName = null
+                            Log.e(TAG, "Failed to launch camera permission request", e)
+                        }
                     } else {
                         performBind(device)
                     }
@@ -891,7 +946,10 @@ fun ColumnScope.LogSection(
                     val scrollState = rememberScrollState()
 
                     LaunchedEffect(logMessages.size) {
-                        scrollState.animateScrollTo(scrollState.maxValue)
+                        // 用户往上翻看历史时不要打断：只在贴近底部时跟随最新日志
+                        if (scrollState.value >= scrollState.maxValue - 4) {
+                            scrollState.animateScrollTo(scrollState.maxValue)
+                        }
                     }
 
                     Text(
@@ -912,7 +970,10 @@ fun FullLogDialog(logMessages: List<String>, onDismiss: () -> Unit) {
     val scrollState = rememberScrollState()
 
     LaunchedEffect(logMessages.size) {
-        scrollState.animateScrollTo(scrollState.maxValue)
+        // 同 LogSection：翻看历史时不被新日志拉回底部
+        if (scrollState.value >= scrollState.maxValue - 4) {
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
     }
 
     AlertDialog(

@@ -21,6 +21,11 @@ object UsbIpNative {
     } catch (e: UnsatisfiedLinkError) {
         Log.e(TAG, "Failed to load native library", e)
         false
+    } catch (e: Throwable) {
+        // 部分 ROM 的加载失败不是 UnsatisfiedLinkError（如 SecurityException）：
+        // 漏出去会让类初始化失败，之后每次访问都变成 NoClassDefFoundError
+        Log.e(TAG, "Unexpected error loading native library", e)
+        false
     }
 
     // LibusbServer 内部没有锁，状态变量/容器并发访问会把状态搞乱，所有调用必须
@@ -60,6 +65,7 @@ object UsbIpNative {
         const val CLAIM_INTERFACE_FAILED = 6
         const val DEVICE_ALREADY_BOUND = 7
         const val HUB_FILTERED = 8
+        const val SERVER_NOT_RUNNING = 9
         const val UNKNOWN_ERROR = 99
     }
 
@@ -76,7 +82,9 @@ object UsbIpNative {
 
     /**
      * 设置日志回调，传 null 表示清除（释放 JNI 全局引用）。
-     * 由 UI 线程在组合/销毁时调用，不能做成 suspend，库不可用时静默忽略
+     * 由 UI 线程在组合/销毁时调用，必须同步执行（不能改成异步/suspend 派发）：
+     * onDispose 的清除若排队执行，Activity 销毁后全局引用可能来不及释放；
+     * 库不可用时静默忽略
      */
     fun setLogCallback(callback: LogCallback?) {
         if (libraryLoaded) setLogCallbackImpl(callback)
@@ -92,7 +100,14 @@ object UsbIpNative {
             if (code == ErrorCode.SUCCESS && busid != null) {
                 DeviceBindResult.Success(busid)
             } else {
-                if (code == ErrorCode.SUCCESS) Log.e(TAG, "bind returned SUCCESS but busid is null")
+                if (code == ErrorCode.SUCCESS) {
+                    // 契约违约：native 声称成功却没交出 busid。调用方没有登记、稍后
+                    // 只会关连接，不主动解绑的话 native 侧留下谁也解不了的孤儿。
+                    // 走公开方法而非 *Impl：库加载守卫统一收口在公开层；
+                    // 同 dispatcher 的 withContext 原地执行，不会嵌套等待
+                    val rollback = unbindUsbDevice(fd)
+                    Log.e(TAG, "bind returned SUCCESS but busid is null, rolled back by fd: $rollback")
+                }
                 errorCodeToBindFailure(code)
             }
         }
@@ -105,6 +120,7 @@ object UsbIpNative {
                 ErrorCode.SUCCESS -> DeviceUnbindResult.Success
                 ErrorCode.DEVICE_NOT_FOUND -> DeviceUnbindResult.Failure.DeviceNotFound
                 ErrorCode.DEVICE_IN_USE -> DeviceUnbindResult.Failure.DeviceInUse
+                ErrorCode.SERVER_NOT_RUNNING -> DeviceUnbindResult.Failure.ServerNotRunning
                 else -> {
                     Log.e(TAG, "Unknown unbind error: $code")
                     DeviceUnbindResult.Failure.UnknownError
@@ -140,7 +156,9 @@ object UsbIpNative {
     @WorkerThread
     fun runOnNativeThread(block: suspend () -> Unit) {
         runBlocking {
-            withContext(nativeDispatcher) {
+            // 用 jniContext 而非裸 dispatcher：与其余 JNI 调用同一纪律
+            //（串行 + 不可取消），换调用场景时不会踩"被取消留下半截状态"的坑
+            withContext(jniContext) {
                 block()
             }
         }
@@ -157,6 +175,7 @@ object UsbIpNative {
         ErrorCode.GET_CONFIG_FAILED -> DeviceBindResult.Failure.GetConfigFailed
         ErrorCode.CLAIM_INTERFACE_FAILED -> DeviceBindResult.Failure.ClaimInterfaceFailed
         ErrorCode.HUB_FILTERED -> DeviceBindResult.Failure.HubFiltered
+        ErrorCode.SERVER_NOT_RUNNING -> DeviceBindResult.Failure.ServerNotRunning
         else -> DeviceBindResult.Failure.UnknownError
     }
 }
